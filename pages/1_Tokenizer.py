@@ -1,226 +1,168 @@
-import streamlit as st
 import pandas as pd
-import nltk
 import re
-import io
+from typing import List, Tuple
 
-# Download NLTK data if not already present
-@st.cache_resource
-def download_nltk_data():
-    try:
-        nltk.data.find('tokenizers/punkt_tab')
-    except LookupError:
-        nltk.download('punkt_tab', quiet=True)
-    return True
+class InstagramSentenceTokenizer:
+    """Minimalist sentence tokenizer for Instagram posts"""
+    
+    def __init__(self):
+        # Simple sentence boundary patterns
+        self.sentence_endings = r'[.!?]+(?:\s|$)'
+        self.hashtag_pattern = r'#\w+'
+    
+    def tokenize_sentences(self, text: str, separate_hashtags: bool = True) -> List[str]:
+        """
+        Split text into sentences with option to separate hashtags
+        
+        Args:
+            text: Input text to tokenize
+            separate_hashtags: If True, hashtags become separate sentences
+            
+        Returns:
+            List of sentences
+        """
+        if not text or pd.isna(text):
+            return []
+        
+        # Clean and normalize text
+        text = str(text).strip()
+        text = re.sub(r'\n+', ' ', text)  # Replace newlines with spaces
+        text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
+        
+        sentences = []
+        
+        if separate_hashtags:
+            # Extract hashtags first
+            hashtags = re.findall(self.hashtag_pattern, text)
+            # Remove hashtags from main text
+            text_without_hashtags = re.sub(self.hashtag_pattern, '', text).strip()
+            
+            # Process main text
+            if text_without_hashtags:
+                main_sentences = self._split_sentences(text_without_hashtags)
+                sentences.extend(main_sentences)
+            
+            # Add hashtags as separate sentence if they exist
+            if hashtags:
+                hashtag_sentence = ' '.join(hashtags)
+                sentences.append(hashtag_sentence)
+        else:
+            sentences = self._split_sentences(text)
+        
+        return [s.strip() for s in sentences if s.strip()]
+    
+    def _split_sentences(self, text: str) -> List[str]:
+        """Split text into sentences using simple rules"""
+        # Split on sentence endings
+        parts = re.split(self.sentence_endings, text)
+        
+        sentences = []
+        for i, part in enumerate(parts):
+            part = part.strip()
+            if part:
+                # Add back punctuation except for last part
+                if i < len(parts) - 1:
+                    # Find the punctuation that was used to split
+                    next_pos = text.find(part) + len(part)
+                    if next_pos < len(text):
+                        punct_match = re.match(r'[.!?]+', text[next_pos:])
+                        if punct_match:
+                            punct = punct_match.group()
+                            # Use single punctuation mark
+                            part += punct[0]
+                sentences.append(part)
+        
+        return sentences
 
-def preprocess_text(text):
-    """Clean and prepare text for sentence tokenization"""
-    if pd.isna(text):
-        return ""
+def process_instagram_data(input_file: str, output_file: str, 
+                          id_column: str = "shortcode", 
+                          context_column: str = "caption",
+                          separate_hashtags: bool = True):
+    """
+    Process Instagram data from raw format to tokenized sentences
     
-    # Convert to string and strip whitespace
-    text = str(text).strip()
+    Args:
+        input_file: Path to input CSV file
+        output_file: Path to output CSV file
+        id_column: Column to use as ID (default: "shortcode")
+        context_column: Column to use as Context (default: "caption")
+        separate_hashtags: Whether to separate hashtags as individual sentences
+    """
     
-    # Replace multiple whitespaces/newlines with single space
-    text = re.sub(r'\s+', ' ', text)
+    # Load data
+    print(f"Loading data from {input_file}...")
+    df = pd.read_csv(input_file)
+    print(f"Loaded {len(df)} rows")
     
-    return text
-
-def tokenize_sentences(text):
-    """Split text into individual sentences"""
-    if not text:
-        return []
+    # Validate columns
+    if id_column not in df.columns:
+        raise ValueError(f"ID column '{id_column}' not found. Available: {list(df.columns)}")
+    if context_column not in df.columns:
+        raise ValueError(f"Context column '{context_column}' not found. Available: {list(df.columns)}")
     
-    # Use NLTK sentence tokenizer
-    sentences = nltk.sent_tokenize(text)
+    # Initialize tokenizer
+    tokenizer = InstagramSentenceTokenizer()
     
-    # Clean sentences and remove empty ones
-    clean_sentences = []
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if sentence:
-            clean_sentences.append(sentence)
+    # Process data
+    print("Processing sentences...")
+    results = []
     
-    return clean_sentences
-
-def transform_instagram_data(df_raw):
-    """Transform raw Instagram data to sentence-tokenized format"""
-    
-    # Initialize list to store transformed rows
-    transformed_rows = []
-    
-    # Process each post
-    for _, row in df_raw.iterrows():
-        post_id = row['shortcode']
-        caption = preprocess_text(row['caption'])
+    for _, row in df.iterrows():
+        post_id = row[id_column]
+        context = row[context_column]
         
         # Tokenize sentences
-        sentences = tokenize_sentences(caption)
+        sentences = tokenizer.tokenize_sentences(context, separate_hashtags)
         
-        # Create rows for each sentence
-        for i, sentence in enumerate(sentences, 1):
-            transformed_rows.append({
+        # Create output rows
+        for sentence_id, sentence in enumerate(sentences, 1):
+            results.append({
                 'ID': post_id,
-                'Sentence ID': i,
-                'Context': caption,
+                'Sentence ID': sentence_id,
+                'Context': context,
                 'Statement': sentence
             })
     
-    # Create transformed dataframe
-    df_transformed = pd.DataFrame(transformed_rows)
+    # Create output DataFrame
+    output_df = pd.DataFrame(results)
     
-    return df_transformed
+    # Save results
+    output_df.to_csv(output_file, index=False)
+    print(f"Saved {len(output_df)} tokenized sentences to {output_file}")
+    
+    return output_df
 
+# Example usage for Colab
 def main():
-    st.set_page_config(
-        page_title="Instagram Sentence Tokenizer",
-        page_icon="📱",
-        layout="wide"
-    )
+    """Main function for easy execution in Colab"""
     
-    st.title("📱 Instagram Sentence Tokenizer")
-    st.markdown("Transform Instagram post data for text analysis using sentence tokenization")
+    # Configuration
+    INPUT_FILE = "ig_posts_raw_mini.csv"
+    OUTPUT_FILE = "ig_posts_processed.csv"
     
-    # Download NLTK data
-    with st.spinner("Initializing NLTK resources..."):
-        download_nltk_data()
+    # Process with default settings
+    print("=== Instagram Sentence Tokenizer ===")
+    print(f"Input: {INPUT_FILE}")
+    print(f"Output: {OUTPUT_FILE}")
+    print()
     
-    # Sidebar for instructions
-    with st.sidebar:
-        st.header("📋 Instructions")
-        st.markdown("""
-        1. Upload your CSV file with Instagram posts
-        2. Ensure it has columns: `shortcode` and `caption`
-        3. Click 'Process Data' to tokenize sentences
-        4. Download the transformed data
-        """)
+    try:
+        result_df = process_instagram_data(
+            input_file=INPUT_FILE,
+            output_file=OUTPUT_FILE,
+            id_column="shortcode",      # Change as needed
+            context_column="caption",   # Change as needed
+            separate_hashtags=True      # Set False to keep hashtags with text
+        )
         
-        st.header("📊 Expected Format")
-        st.markdown("""
-        **Input columns:**
-        - `shortcode`: Post ID
-        - `caption`: Post text
+        print("\n=== Processing Complete ===")
+        print(f"Total sentences extracted: {len(result_df)}")
+        print(f"Unique posts processed: {result_df['ID'].nunique()}")
+        print("\nSample output:")
+        print(result_df.head(3).to_string(index=False))
         
-        **Output columns:**
-        - `ID`: Post identifier
-        - `Sentence ID`: Sequential number
-        - `Context`: Original caption
-        - `Statement`: Individual sentence
-        """)
-    
-    # File upload section
-    st.header("📁 Upload Data")
-    uploaded_file = st.file_uploader(
-        "Choose a CSV file",
-        type="csv",
-        help="Upload your ig_posts_raw_mini.csv file"
-    )
-    
-    if uploaded_file is not None:
-        try:
-            # Read the uploaded file
-            df_raw = pd.read_csv(uploaded_file)
-            
-            # Validate columns
-            required_columns = ['shortcode', 'caption']
-            if not all(col in df_raw.columns for col in required_columns):
-                st.error(f"❌ Missing required columns. Expected: {required_columns}")
-                st.stop()
-            
-            # Display raw data
-            st.header("📋 Raw Data Preview")
-            st.dataframe(df_raw.head(), use_container_width=True)
-            st.info(f"Total posts: {len(df_raw)}")
-            
-            # Process button
-            if st.button("🔄 Process Data", type="primary"):
-                with st.spinner("Processing sentences..."):
-                    # Transform the data
-                    df_transformed = transform_instagram_data(df_raw)
-                
-                # Display results
-                st.header("✅ Transformed Data")
-                st.dataframe(df_transformed, use_container_width=True)
-                
-                # Summary statistics
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Original Posts", len(df_raw))
-                with col2:
-                    st.metric("Total Sentences", len(df_transformed))
-                with col3:
-                    avg_sentences = len(df_transformed) / len(df_raw) if len(df_raw) > 0 else 0
-                    st.metric("Avg Sentences/Post", f"{avg_sentences:.1f}")
-                
-                # Sample transformation display
-                st.header("🔍 Sample Transformation")
-                if not df_transformed.empty:
-                    sample_id = df_transformed['ID'].iloc[0]
-                    sample_data = df_transformed[df_transformed['ID'] == sample_id]
-                    
-                    st.subheader(f"Post ID: {sample_id}")
-                    st.write(f"**Original Caption:** {sample_data['Context'].iloc[0]}")
-                    st.write("**Tokenized Sentences:**")
-                    for _, row in sample_data.iterrows():
-                        st.write(f"{row['Sentence ID']}. {row['Statement']}")
-                
-                # Download section
-                st.header("💾 Download Results")
-                
-                # Convert dataframe to CSV
-                csv_buffer = io.StringIO()
-                df_transformed.to_csv(csv_buffer, index=False)
-                csv_data = csv_buffer.getvalue()
-                
-                st.download_button(
-                    label="📥 Download Transformed Data",
-                    data=csv_data,
-                    file_name="ig_posts_processed.csv",
-                    mime="text/csv",
-                    help="Download the sentence-tokenized data"
-                )
-                
-                # Display transformation summary
-                st.success(f"✅ Successfully processed {len(df_raw)} posts into {len(df_transformed)} sentences!")
-                
-        except Exception as e:
-            st.error(f"❌ Error processing file: {str(e)}")
-            st.info("Please check that your CSV file has the correct format and columns.")
-    
-    else:
-        # Show example when no file is uploaded
-        st.header("📄 Example Data Format")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Input Format (ig_posts_raw_mini.csv)")
-            example_input = pd.DataFrame({
-                'shortcode': ['Cc8dyfCLwTX', 'CTFccmHFfZQ'],
-                'caption': [
-                    'No other way to walk into warmer weather✨',
-                    'Allow me to introduce myself. I make custom clothing for business professionals!'
-                ]
-            })
-            st.dataframe(example_input, use_container_width=True)
-        
-        with col2:
-            st.subheader("Output Format (ig_posts_transformed_mini.csv)")
-            example_output = pd.DataFrame({
-                'ID': ['Cc8dyfCLwTX', 'CTFccmHFfZQ', 'CTFccmHFfZQ'],
-                'Sentence ID': [1, 1, 2],
-                'Context': [
-                    'No other way to walk into warmer weather✨',
-                    'Allow me to introduce myself. I make custom clothing for business professionals!',
-                    'Allow me to introduce myself. I make custom clothing for business professionals!'
-                ],
-                'Statement': [
-                    'No other way to walk into warmer weather.',
-                    'Allow me to introduce myself.',
-                    'I make custom clothing for business professionals!'
-                ]
-            })
-            st.dataframe(example_output, use_container_width=True)
+    except Exception as e:
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
