@@ -1,3 +1,6 @@
+# Install required packages
+!pip install nltk
+
 import pandas as pd
 import nltk
 import re
