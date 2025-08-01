@@ -238,35 +238,85 @@ def main():
             st.dataframe(df_raw.head(), use_container_width=True)
             st.info(f"Total records: {len(df_raw)} | Columns: {', '.join(df_raw.columns)}")
             
-            # Column mapping
+            # Auto-detect column mappings
+            def auto_detect_columns(columns):
+                """Auto-detect column mappings based on common naming patterns"""
+                mappings = {}
+                
+                # Conversation ID patterns
+                id_patterns = ['id', 'conv', 'conversation', 'chat', 'session']
+                mappings['conversation_id'] = next((col for col in columns 
+                                                  if any(pattern in col.lower() for pattern in id_patterns)), 
+                                                 columns[0])
+                
+                # Turn patterns
+                turn_patterns = ['turn', 'step', 'sequence', 'order', 'number', 'time']
+                mappings['turn'] = next((col for col in columns 
+                                       if any(pattern in col.lower() for pattern in turn_patterns)), 
+                                      columns[1] if len(columns) > 1 else columns[0])
+                
+                # Message patterns
+                message_patterns = ['message', 'text', 'content', 'utterance', 'statement', 'msg']
+                mappings['message'] = next((col for col in columns 
+                                          if any(pattern in col.lower() for pattern in message_patterns)), 
+                                         columns[-2] if len(columns) >= 2 else columns[0])
+                
+                # Speaker patterns
+                speaker_patterns = ['speaker', 'user', 'role', 'agent', 'customer', 'who', 'from']
+                mappings['speaker'] = next((col for col in columns 
+                                          if any(pattern in col.lower() for pattern in speaker_patterns)), 
+                                         columns[-1])
+                
+                return mappings
+            
+            # Get auto-detected mappings
+            auto_mappings = auto_detect_columns(df_raw.columns.tolist())
+            
+            # Column mapping with auto-detection
             st.header("🗺️ Column Mapping")
+            st.markdown("Map your columns to the required fields (auto-detected defaults shown):")
+            
             col1, col2 = st.columns(2)
             
             with col1:
+                # Find index of auto-detected column for default selection
+                conv_id_default = list(df_raw.columns).index(auto_mappings['conversation_id'])
                 conversation_id_col = st.selectbox(
                     "Conversation ID Column",
                     options=df_raw.columns,
+                    index=conv_id_default,
                     help="Column that identifies each conversation"
                 )
                 
+                turn_default = list(df_raw.columns).index(auto_mappings['turn'])
                 turn_col = st.selectbox(
                     "Turn Column",
                     options=df_raw.columns,
+                    index=turn_default,
                     help="Column with turn numbers or timestamps"
                 )
             
             with col2:
+                message_default = list(df_raw.columns).index(auto_mappings['message'])
                 message_col = st.selectbox(
                     "Message Column",
                     options=df_raw.columns,
+                    index=message_default,
                     help="Column containing the message text"
                 )
                 
+                speaker_default = list(df_raw.columns).index(auto_mappings['speaker'])
                 speaker_col = st.selectbox(
                     "Speaker Column", 
                     options=df_raw.columns,
+                    index=speaker_default,
                     help="Column identifying who sent the message"
                 )
+            
+            # Show mapping summary
+            mapping_summary = st.container()
+            with mapping_summary:
+                st.info(f"**Mapping:** Conversation ID → `{conversation_id_col}` | Turn → `{turn_col}` | Message → `{message_col}` | Speaker → `{speaker_col}`")
             
             # Processing configuration
             st.header("⚙️ Processing Configuration")
@@ -440,6 +490,9 @@ def main():
         })
         st.dataframe(example_output, use_container_width=True)
         st.caption("Notice how each statement's context includes previous statements in the rolling window")
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
