@@ -17,194 +17,103 @@ def preprocess_text(text):
     """Clean and prepare text for sentence tokenization"""
     if pd.isna(text):
         return ""
+    
+    # Convert to string and strip whitespace
     text = str(text).strip()
+    
+    # Replace multiple whitespaces/newlines with single space
     text = re.sub(r'\s+', ' ', text)
+    
     return text
 
 def tokenize_sentences(text):
     """Split text into individual sentences"""
     if not text:
         return []
+    
+    # Use NLTK sentence tokenizer
     sentences = nltk.sent_tokenize(text)
+    
+    # Clean sentences and remove empty ones
     clean_sentences = []
     for sentence in sentences:
         sentence = sentence.strip()
         if sentence:
             clean_sentences.append(sentence)
+    
     return clean_sentences
 
-def create_rolling_context(statements, window_size):
-    """Create rolling window context for each statement"""
-    contexts = []
-    for i in range(len(statements)):
-        start_idx = max(0, i - window_size + 1)
-        context_window = statements[start_idx:i+1]
-        contexts.append(' '.join(context_window))
-    return contexts
-
-def process_data(df, statement_level, context_type, window_size=3):
-    """Process data based on user selections"""
+def transform_instagram_data(df_raw):
+    """Transform raw Instagram data to sentence-tokenized format"""
     
-    processed_rows = []
+    # Initialize list to store transformed rows
+    transformed_rows = []
     
-    # Group by ID (post/chat level)
-    for post_id, group in df.groupby('ID'):
+    # Process each post
+    for _, row in df_raw.iterrows():
+        post_id = row['shortcode']
+        caption = preprocess_text(row['caption'])
         
-        if statement_level == "Sentence Level":
-            # Tokenize all turns into sentences
-            all_sentences = []
-            sentence_to_turn = []
-            sentence_to_speaker = []
-            
-            for _, row in group.iterrows():
-                turn_text = preprocess_text(row['Statement'])
-                sentences = tokenize_sentences(turn_text)
-                
-                for sentence in sentences:
-                    all_sentences.append(sentence)
-                    sentence_to_turn.append(row['Turn'])
-                    sentence_to_speaker.append(row.get('Speaker', 'Unknown'))
-            
-            # Create contexts based on selection
-            if context_type == "Rolling Window":
-                contexts = create_rolling_context(all_sentences, window_size)
-            else:  # Whole Post
-                full_context = ' '.join(all_sentences)
-                contexts = [full_context] * len(all_sentences)
-            
-            # Create rows for each sentence
-            for i, (sentence, context) in enumerate(zip(all_sentences, contexts)):
-                processed_rows.append({
-                    'ID': post_id,
-                    'Turn': sentence_to_turn[i],
-                    'Sentence ID': i + 1,
-                    'Context': context,
-                    'Statement': sentence,
-                    'Speaker': sentence_to_speaker[i],
-                    'Statement Level': 'Sentence',
-                    'Context Type': context_type
-                })
+        # Tokenize sentences
+        sentences = tokenize_sentences(caption)
         
-        elif statement_level == "Turn Level":
-            # Use turns as statements
-            all_turns = []
-            turn_speakers = []
-            
-            for _, row in group.iterrows():
-                turn_text = preprocess_text(row['Statement'])
-                all_turns.append(turn_text)
-                turn_speakers.append(row.get('Speaker', 'Unknown'))
-            
-            # Create contexts based on selection
-            if context_type == "Rolling Window":
-                contexts = create_rolling_context(all_turns, window_size)
-            else:  # Whole Post
-                full_context = ' '.join(all_turns)
-                contexts = [full_context] * len(all_turns)
-            
-            # Create rows for each turn
-            for i, (turn, context) in enumerate(zip(all_turns, contexts)):
-                processed_rows.append({
-                    'ID': post_id,
-                    'Turn': group.iloc[i]['Turn'],
-                    'Sentence ID': i + 1,
-                    'Context': context,
-                    'Statement': turn,
-                    'Speaker': turn_speakers[i],
-                    'Statement Level': 'Turn',
-                    'Context Type': context_type
-                })
-        
-        else:  # Post Level
-            # Use entire post as single statement
-            all_text = []
-            speakers = []
-            
-            for _, row in group.iterrows():
-                all_text.append(preprocess_text(row['Statement']))
-                speakers.append(row.get('Speaker', 'Unknown'))
-            
-            full_statement = ' '.join(all_text)
-            
-            processed_rows.append({
+        # Create rows for each sentence
+        for i, sentence in enumerate(sentences, 1):
+            transformed_rows.append({
                 'ID': post_id,
-                'Turn': 'All',
-                'Sentence ID': 1,
-                'Context': full_statement,  # For post level, context = statement
-                'Statement': full_statement,
-                'Speaker': ', '.join(set(speakers)),
-                'Statement Level': 'Post',
-                'Context Type': context_type
+                'Sentence ID': i,
+                'Context': caption,
+                'Statement': sentence
             })
     
-    return pd.DataFrame(processed_rows)
+    # Create transformed dataframe
+    df_transformed = pd.DataFrame(transformed_rows)
+    
+    return df_transformed
 
 def main():
     st.set_page_config(
-        page_title="Text Preprocessing App",
-        page_icon="🔄",
+        page_title="Instagram Sentence Tokenizer",
+        page_icon="📱",
         layout="wide"
     )
     
-    st.title("🔄 Text Preprocessing App with Rolling Context")
-    st.markdown("Configure context and statement types for text classification experiments")
+    st.title("📱 Instagram Sentence Tokenizer")
+    st.markdown("Transform Instagram post data for text analysis using sentence tokenization")
     
     # Download NLTK data
     with st.spinner("Initializing NLTK resources..."):
         download_nltk_data()
     
-    # Configuration sidebar
+    # Sidebar for instructions
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Statement level selection
-        statement_level = st.selectbox(
-            "📝 Statement Level",
-            ["Sentence Level", "Turn Level", "Post Level"],
-            help="Choose how to split text into statements"
-        )
-        
-        # Context type selection
-        context_type = st.selectbox(
-            "📋 Context Type",
-            ["Rolling Window", "Whole Post"],
-            help="Choose context scope for each statement"
-        )
-        
-        # Window size (only for rolling window)
-        if context_type == "Rolling Window":
-            window_size = st.slider(
-                "🪟 Window Size",
-                min_value=1,
-                max_value=10,
-                value=3,
-                help="Number of previous statements to include in context"
-            )
-        else:
-            window_size = None
-        
-        # Speaker filter (optional)
-        speaker_filter = st.multiselect(
-            "👥 Filter by Speaker",
-            ["customer", "salesperson"],
-            help="Optional: filter results by speaker type"
-        )
-        
-        st.header("📊 Expected Input")
+        st.header("📋 Instructions")
         st.markdown("""
-        **Required columns:**
-        - `ID`: Post/Chat identifier
-        - `Turn`: Turn number
-        - `Statement`: Text content
-        - `Speaker`: customer/salesperson (optional)
+        1. Upload your CSV file with Instagram posts
+        2. Ensure it has columns: `shortcode` and `caption`
+        3. Click 'Process Data' to tokenize sentences
+        4. Download the transformed data
+        """)
+        
+        st.header("📊 Expected Format")
+        st.markdown("""
+        **Input columns:**
+        - `shortcode`: Post ID
+        - `caption`: Post text
+        
+        **Output columns:**
+        - `ID`: Post identifier
+        - `Sentence ID`: Sequential number
+        - `Context`: Original caption
+        - `Statement`: Individual sentence
         """)
     
     # File upload section
-    st.header("📁 Upload Dataset")
+    st.header("📁 Upload Data")
     uploaded_file = st.file_uploader(
         "Choose a CSV file",
         type="csv",
-        help="Upload your dataset with ID, Turn, Statement columns"
+        help="Upload your ig_posts_raw_mini.csv file"
     )
     
     if uploaded_file is not None:
@@ -212,160 +121,106 @@ def main():
             # Read the uploaded file
             df_raw = pd.read_csv(uploaded_file)
             
-            # Validate required columns
-            required_columns = ['ID', 'Turn', 'Statement']
-            missing_columns = [col for col in required_columns if col not in df_raw.columns]
-            
-            if missing_columns:
-                st.error(f"❌ Missing required columns: {missing_columns}")
+            # Validate columns
+            required_columns = ['shortcode', 'caption']
+            if not all(col in df_raw.columns for col in required_columns):
+                st.error(f"❌ Missing required columns. Expected: {required_columns}")
                 st.stop()
             
-            # Add Speaker column if not present
-            if 'Speaker' not in df_raw.columns:
-                st.warning("⚠️ No 'Speaker' column found. Adding default values.")
-                df_raw['Speaker'] = 'Unknown'
-            
-            # Display raw data preview
+            # Display raw data
             st.header("📋 Raw Data Preview")
-            st.dataframe(df_raw.head(10), use_container_width=True)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Records", len(df_raw))
-            with col2:
-                st.metric("Unique IDs", df_raw['ID'].nunique())
-            with col3:
-                st.metric("Total Turns", df_raw['Turn'].nunique())
-            
-            # Configuration summary
-            st.header("🔧 Processing Configuration")
-            config_col1, config_col2 = st.columns(2)
-            
-            with config_col1:
-                st.info(f"**Statement Level:** {statement_level}")
-                st.info(f"**Context Type:** {context_type}")
-                if window_size:
-                    st.info(f"**Window Size:** {window_size}")
-            
-            with config_col2:
-                if speaker_filter:
-                    st.info(f"**Speaker Filter:** {', '.join(speaker_filter)}")
-                else:
-                    st.info("**Speaker Filter:** None")
+            st.dataframe(df_raw.head(), use_container_width=True)
+            st.info(f"Total posts: {len(df_raw)}")
             
             # Process button
-            if st.button("🚀 Process Data", type="primary"):
-                with st.spinner("Processing data with selected configuration..."):
-                    # Apply speaker filter if selected
-                    if speaker_filter:
-                        df_filtered = df_raw[df_raw['Speaker'].isin(speaker_filter)]
-                        if df_filtered.empty:
-                            st.error("No data matches the selected speaker filter!")
-                            st.stop()
-                    else:
-                        df_filtered = df_raw
-                    
-                    # Process the data
-                    df_processed = process_data(
-                        df_filtered, 
-                        statement_level, 
-                        context_type, 
-                        window_size or 3
-                    )
+            if st.button("🔄 Process Data", type="primary"):
+                with st.spinner("Processing sentences..."):
+                    # Transform the data
+                    df_transformed = transform_instagram_data(df_raw)
                 
                 # Display results
-                st.header("✅ Processed Data")
-                st.dataframe(df_processed, use_container_width=True)
+                st.header("✅ Transformed Data")
+                st.dataframe(df_transformed, use_container_width=True)
                 
-                # Results summary
-                st.header("📊 Processing Results")
-                col1, col2, col3, col4 = st.columns(4)
-                
+                # Summary statistics
+                col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Input Records", len(df_filtered))
+                    st.metric("Original Posts", len(df_raw))
                 with col2:
-                    st.metric("Output Records", len(df_processed))
+                    st.metric("Total Sentences", len(df_transformed))
                 with col3:
-                    st.metric("Processed IDs", df_processed['ID'].nunique())
-                with col4:
-                    expansion_ratio = len(df_processed) / len(df_filtered) if len(df_filtered) > 0 else 0
-                    st.metric("Expansion Ratio", f"{expansion_ratio:.2f}x")
+                    avg_sentences = len(df_transformed) / len(df_raw) if len(df_raw) > 0 else 0
+                    st.metric("Avg Sentences/Post", f"{avg_sentences:.1f}")
                 
-                # Sample transformation
-                if not df_processed.empty:
-                    st.header("🔍 Sample Transformation")
-                    sample_id = df_processed['ID'].iloc[0]
-                    sample_data = df_processed[df_processed['ID'] == sample_id].head(3)
+                # Sample transformation display
+                st.header("🔍 Sample Transformation")
+                if not df_transformed.empty:
+                    sample_id = df_transformed['ID'].iloc[0]
+                    sample_data = df_transformed[df_transformed['ID'] == sample_id]
                     
+                    st.subheader(f"Post ID: {sample_id}")
+                    st.write(f"**Original Caption:** {sample_data['Context'].iloc[0]}")
+                    st.write("**Tokenized Sentences:**")
                     for _, row in sample_data.iterrows():
-                        with st.expander(f"ID: {row['ID']}, Turn: {row['Turn']}, Sentence: {row['Sentence ID']}"):
-                            st.write(f"**Statement:** {row['Statement']}")
-                            st.write(f"**Context:** {row['Context']}")
-                            st.write(f"**Speaker:** {row['Speaker']}")
+                        st.write(f"{row['Sentence ID']}. {row['Statement']}")
                 
                 # Download section
                 st.header("💾 Download Results")
                 
                 # Convert dataframe to CSV
                 csv_buffer = io.StringIO()
-                df_processed.to_csv(csv_buffer, index=False)
+                df_transformed.to_csv(csv_buffer, index=False)
                 csv_data = csv_buffer.getvalue()
                 
-                filename = f"processed_data_{statement_level.lower().replace(' ', '_')}_{context_type.lower().replace(' ', '_')}.csv"
-                
                 st.download_button(
-                    label="📥 Download Processed Data",
+                    label="📥 Download Transformed Data",
                     data=csv_data,
-                    file_name=filename,
+                    file_name="ig_posts_processed.csv",
                     mime="text/csv",
-                    help="Download the processed dataset"
+                    help="Download the sentence-tokenized data"
                 )
                 
-                st.success(f"✅ Successfully processed {len(df_filtered)} records into {len(df_processed)} statements!")
+                # Display transformation summary
+                st.success(f"✅ Successfully processed {len(df_raw)} posts into {len(df_transformed)} sentences!")
                 
         except Exception as e:
             st.error(f"❌ Error processing file: {str(e)}")
-            st.info("Please check that your CSV file has the correct format and required columns.")
+            st.info("Please check that your CSV file has the correct format and columns.")
     
     else:
-        # Example data format
+        # Show example when no file is uploaded
         st.header("📄 Example Data Format")
         
-        example_data = pd.DataFrame({
-            'ID': ['post_001', 'post_001', 'post_001', 'post_002', 'post_002'],
-            'Turn': [1, 2, 3, 1, 2],
-            'Statement': [
-                'Hi there! I love your new collection.',
-                'Thank you! Which piece caught your eye?',
-                'The blue dress is perfect for summer events.',
-                'Do you have this in size medium?',
-                'Yes, we have it in stock. Would you like me to reserve it?'
-            ],
-            'Speaker': ['customer', 'salesperson', 'customer', 'customer', 'salesperson']
-        })
-        
-        st.dataframe(example_data, use_container_width=True)
-        
-        st.header("🎯 Use Cases")
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("Sentence + Rolling Window")
-            st.markdown("""
-            - **Best for:** Fine-grained analysis
-            - **Context:** Previous 2-3 sentences
-            - **Statement:** Individual sentences
-            - **Use case:** Intent classification, sentiment analysis
-            """)
+            st.subheader("Input Format (ig_posts_raw_mini.csv)")
+            example_input = pd.DataFrame({
+                'shortcode': ['Cc8dyfCLwTX', 'CTFccmHFfZQ'],
+                'caption': [
+                    'No other way to walk into warmer weather✨',
+                    'Allow me to introduce myself. I make custom clothing for business professionals!'
+                ]
+            })
+            st.dataframe(example_input, use_container_width=True)
         
         with col2:
-            st.subheader("Turn + Whole Post")
-            st.markdown("""
-            - **Best for:** Conversation analysis
-            - **Context:** Entire conversation
-            - **Statement:** Complete turns
-            - **Use case:** Topic modeling, conversation flow
-            """)
+            st.subheader("Output Format (ig_posts_transformed_mini.csv)")
+            example_output = pd.DataFrame({
+                'ID': ['Cc8dyfCLwTX', 'CTFccmHFfZQ', 'CTFccmHFfZQ'],
+                'Sentence ID': [1, 1, 2],
+                'Context': [
+                    'No other way to walk into warmer weather✨',
+                    'Allow me to introduce myself. I make custom clothing for business professionals!',
+                    'Allow me to introduce myself. I make custom clothing for business professionals!'
+                ],
+                'Statement': [
+                    'No other way to walk into warmer weather.',
+                    'Allow me to introduce myself.',
+                    'I make custom clothing for business professionals!'
+                ]
+            })
+            st.dataframe(example_output, use_container_width=True)
 
 if __name__ == "__main__":
     main()
