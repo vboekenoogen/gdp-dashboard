@@ -225,7 +225,8 @@ def main():
     uploaded_file = st.file_uploader(
         "Choose a CSV file",
         type="csv",
-        help="Upload your conversation dataset"
+        help="Upload your conversation dataset",
+        key="conversation_file_upload"
     )
     
     if uploaded_file is not None:
@@ -285,7 +286,8 @@ def main():
                     "Conversation ID Column",
                     options=df_raw.columns,
                     index=conv_id_default,
-                    help="Column that identifies each conversation"
+                    help="Column that identifies each conversation",
+                    key="conv_id_selectbox"
                 )
                 
                 turn_default = list(df_raw.columns).index(auto_mappings['turn'])
@@ -293,7 +295,8 @@ def main():
                     "Turn Column",
                     options=df_raw.columns,
                     index=turn_default,
-                    help="Column with turn numbers or timestamps"
+                    help="Column with turn numbers or timestamps",
+                    key="turn_selectbox"
                 )
             
             with col2:
@@ -302,7 +305,8 @@ def main():
                     "Message Column",
                     options=df_raw.columns,
                     index=message_default,
-                    help="Column containing the message text"
+                    help="Column containing the message text",
+                    key="message_selectbox"
                 )
                 
                 speaker_default = list(df_raw.columns).index(auto_mappings['speaker'])
@@ -310,7 +314,8 @@ def main():
                     "Speaker Column", 
                     options=df_raw.columns,
                     index=speaker_default,
-                    help="Column identifying who sent the message"
+                    help="Column identifying who sent the message",
+                    key="speaker_selectbox"
                 )
             
             # Show mapping summary
@@ -327,14 +332,16 @@ def main():
                 statement_level = st.selectbox(
                     "Statement Level",
                     ["Sentence Level", "Turn Level", "Conversation Level"],
-                    help="How to split the text into statements"
+                    help="How to split the text into statements",
+                    key="statement_level_selectbox"
                 )
             
             with col2:
                 context_type = st.selectbox(
                     "Context Type",
                     ["Rolling Window", "Whole Conversation"],
-                    help="Type of context to provide for each statement"
+                    help="Type of context to provide for each statement",
+                    key="context_type_selectbox"
                 )
             
             with col3:
@@ -344,7 +351,8 @@ def main():
                         min_value=1,
                         max_value=20,
                         value=3,
-                        help="Number of previous statements to include"
+                        help="Number of previous statements to include",
+                        key="window_size_input"
                     )
                 else:
                     window_size = 0
@@ -490,9 +498,6 @@ def main():
         })
         st.dataframe(example_output, use_container_width=True)
         st.caption("Notice how each statement's context includes previous statements in the rolling window")
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
