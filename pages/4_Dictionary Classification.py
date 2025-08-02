@@ -136,7 +136,7 @@ def export_results_csv(results_df: pd.DataFrame) -> io.StringIO:
     return output.getvalue()
 
 # Main app layout
-st.title("🧠 Dictionary Classification Bot")
+st.title("🧠 Dictionary Refinement Bot")
 st.markdown("Create custom dictionaries and classify text data using AI-powered keyword generation")
 
 # Progress indicator
