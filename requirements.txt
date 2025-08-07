@@ -3,7 +3,11 @@ pandas
 nltk
 chardet
 # Classifier Word Metrics Tool - Requirements
-# Core Streamlit and Data Processing
+# Core Streamlit and Web Framework
+streamlit>=1.28.0
+
+# Data Processing and Analysis
+pandas>=2.0.0
 numpy>=1.24.0
 
 # Visualization Libraries
@@ -11,23 +15,14 @@ plotly>=5.15.0
 seaborn>=0.12.0
 matplotlib>=3.7.0
 
-# Text Processing and NLP
+# Natural Language Processing
 textblob>=0.17.1
-nltk>=3.8.1
 
-# Additional Data Science Libraries
-scikit-learn>=1.3.0
+# Statistical Analysis
 scipy>=1.10.0
 
-# File Processing (if needed for advanced CSV handling)
+# File Processing (optional for advanced features)
 openpyxl>=3.1.0
-xlrd>=2.0.1
 
-# Optional: For enhanced text processing
-wordcloud>=1.9.2
-spacy>=3.6.0
-
-# Development and Testing (optional)
-pytest>=7.4.0
-black>=23.0.0
-flake8>=6.0.0
+# Required for TextBlob to work properly
+nltk>=3.8.1
