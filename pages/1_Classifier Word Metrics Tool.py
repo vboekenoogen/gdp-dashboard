@@ -43,16 +43,19 @@ def smart_csv_reader(file):
         detected_encoding = result['encoding']
         confidence = result['confidence']
         
-        if confidence > 0.7:  # High confidence
-            string_data = bytes_data.decode(detected_encoding)
-            df = pd.read_csv(io.StringIO(string_data))
-            st.success(f"✅ File loaded with auto-detected encoding: {detected_encoding} (confidence: {confidence:.2f})")
-            return df, detected_encoding
+        if confidence and confidence > 0.7:  # High confidence
+            try:
+                string_data = bytes_data.decode(detected_encoding)
+                df = pd.read_csv(io.StringIO(string_data))
+                st.success(f"✅ File loaded with auto-detected encoding: {detected_encoding} (confidence: {confidence:.2f})")
+                return df, detected_encoding
+            except:
+                pass  # Fall through to manual attempts
     except Exception as e:
         st.warning(f"Auto-detection failed: {e}")
     
-    # Fallback to common encodings
-    encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+    # Fallback to common encodings (start with most likely for CSV files)
+    encodings_to_try = ['latin-1', 'cp1252', 'iso-8859-1', 'utf-8', 'utf-16', 'windows-1252']
     
     for encoding in encodings_to_try:
         try:
@@ -60,15 +63,15 @@ def smart_csv_reader(file):
             df = pd.read_csv(io.StringIO(string_data))
             st.warning(f"⚠️ File loaded with fallback encoding: {encoding}")
             return df, encoding
-        except:
+        except Exception as e:
             continue
     
-    # Last resort - use error handling
+    # Last resort - use error handling with latin-1 (which accepts any byte)
     try:
-        string_data = bytes_data.decode('utf-8', errors='replace')
+        string_data = bytes_data.decode('latin-1')
         df = pd.read_csv(io.StringIO(string_data))
-        st.error("⚠️ Loaded with UTF-8 and replaced invalid characters. Some data may be corrupted.")
-        return df, "utf-8 (with errors replaced)"
+        st.error("⚠️ Loaded with latin-1 encoding. Some characters may appear incorrectly.")
+        return df, "latin-1 (fallback)"
     except Exception as e:
         st.error(f"❌ Could not read file: {e}")
         return None, None
@@ -228,7 +231,7 @@ def main():
                     df, encoding_used = smart_csv_reader(uploaded_file)
             else:
                 # Manual encoding selection
-                encoding_options = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+                encoding_options = ['latin-1', 'cp1252', 'iso-8859-1', 'utf-8', 'utf-16', 'windows-1252']
                 selected_encoding = st.selectbox("Select file encoding:", encoding_options)
                 
                 if st.button("Load with selected encoding"):
@@ -240,6 +243,9 @@ def main():
                         else:
                             st.error(f"❌ Error with {selected_encoding} encoding: {error}")
                             st.info("💡 Try a different encoding or use auto-detection.")
+                            # If manual fails, try auto-detect as backup
+                            st.write("Attempting auto-detection as backup...")
+                            df, encoding_used = smart_csv_reader(uploaded_file)
 
             if df is not None:
                 st.success(f"📊 File loaded successfully! Shape: {df.shape}")
