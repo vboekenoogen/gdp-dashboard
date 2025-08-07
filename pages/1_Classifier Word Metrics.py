@@ -1,81 +1,79 @@
 import pandas as pd
 
-dictionaries = {
-    'urgency_marketing': {
-        'limited', 'limited time', 'limited run', 'limited edition', 'order now',
-        'last chance', 'hurry', 'while supplies last', 'before they are gone',
-        'selling out', 'selling fast', 'act now', 'dont wait', 'today only',
-        'expires soon', 'final hours', 'almost gone'
-    },
-    'exclusive_marketing': {
-        'exclusive', 'exclusively', 'exclusive offer', 'exclusive deal',
-        'members only', 'vip', 'special access', 'invitation only',
-        'premium', 'privileged', 'limited access', 'select customers',
-        'insider', 'private sale', 'early access'
-    }
-}
+urgency_terms = [
+    'limited', 'limited time', 'limited run', 'limited edition', 'order now',
+    'last chance', 'hurry', 'while supplies last', 'before they are gone',
+    'selling out', 'selling fast', 'act now', 'dont wait', 'today only',
+    'expires soon', 'final hours', 'almost gone'
+]
 
-def classify_text(text, dictionaries):
+exclusive_terms = [
+    'exclusive', 'exclusively', 'exclusive offer', 'exclusive deal',
+    'members only', 'vip', 'special access', 'invitation only',
+    'premium', 'privileged', 'limited access', 'select customers',
+    'insider', 'private sale', 'early access'
+]
+
+dictionaries = {}
+dictionaries['urgency_marketing'] = urgency_terms
+dictionaries['exclusive_marketing'] = exclusive_terms
+
+def classify_text(text, dict_list, dict_name):
     if pd.isna(text):
-        return {dict_name: [] for dict_name in dictionaries.keys()}
+        return []
     
     text_lower = str(text).lower()
-    results = {}
+    matches = []
     
-    for dict_name, terms in dictionaries.items():
-        matches = []
-        for term in terms:
-            if term.lower() in text_lower:
-                matches.append(term)
-        results[dict_name] = matches
+    for term in dict_list:
+        if term.lower() in text_lower:
+            matches.append(term)
     
-    return results
+    return matches
 
 def load_csv_safe(csv_file):
-    encodings = ['latin-1', 'cp1252', 'iso-8859-1', 'utf-8']
-    
-    for encoding in encodings:
+    try:
+        df = pd.read_csv(csv_file, encoding='latin-1')
+        print("Loaded with latin-1")
+        return df
+    except:
         try:
-            df = pd.read_csv(csv_file, encoding=encoding)
-            print(f"Loaded with {encoding}")
+            df = pd.read_csv(csv_file, encoding='utf-8')
+            print("Loaded with utf-8")
             return df
         except:
-            continue
-    
-    raise ValueError("Could not read CSV")
+            df = pd.read_csv(csv_file, encoding='cp1252')
+            print("Loaded with cp1252")
+            return df
 
-def process_data(csv_file):
-    df = load_csv_safe(csv_file)
-    
-    classifications = df['Statement'].apply(lambda x: classify_text(x, dictionaries))
-    
-    for dict_name in dictionaries.keys():
-        df[dict_name + '_matches'] = classifications.apply(lambda x: x[dict_name])
-        df[dict_name + '_count'] = df[dict_name + '_matches'].apply(len)
-        df[dict_name + '_binary'] = (df[dict_name + '_count'] > 0).astype(int)
-    
-    return df
+df = load_csv_safe('sample_data.csv')
+print("Data shape:", df.shape)
 
-result_df = process_data('sample_data.csv')
+df['urgency_matches'] = df['Statement'].apply(lambda x: classify_text(x, urgency_terms, 'urgency'))
+df['urgency_count'] = df['urgency_matches'].apply(len)
+df['urgency_binary'] = (df['urgency_count'] > 0).astype(int)
 
-for dict_name in dictionaries.keys():
-    count_col = dict_name + '_count'
-    total = result_df[count_col].sum()
-    texts = (result_df[count_col] > 0).sum()
-    print(f"{dict_name}: {total} matches in {texts} texts")
+df['exclusive_matches'] = df['Statement'].apply(lambda x: classify_text(x, exclusive_terms, 'exclusive'))
+df['exclusive_count'] = df['exclusive_matches'].apply(len)
+df['exclusive_binary'] = (df['exclusive_count'] > 0).astype(int)
 
-for idx, row in result_df.iterrows():
+print("\nResults:")
+print("Urgency matches:", df['urgency_count'].sum(), "in", (df['urgency_count'] > 0).sum(), "texts")
+print("Exclusive matches:", df['exclusive_count'].sum(), "in", (df['exclusive_count'] > 0).sum(), "texts")
+
+print("\nDetailed results:")
+for idx, row in df.iterrows():
     statement = str(row['Statement'])
     if len(statement) > 50:
         statement = statement[:50] + "..."
     
-    print(f"\nID: {row['ID']}")
-    print(f"Text: {statement}")
+    print("\nID:", row['ID'])
+    print("Text:", statement)
     
-    for dict_name in dictionaries.keys():
-        matches = row[dict_name + '_matches']
-        if matches:
-            print(f"  {dict_name}: {matches}")
+    if row['urgency_matches']:
+        print("  Urgency:", row['urgency_matches'])
+    if row['exclusive_matches']:
+        print("  Exclusive:", row['exclusive_matches'])
 
-result_df.to_csv('classified_data.csv', index=False, encoding='utf-8')
-print("Saved to classified_data.csv")
+df.to_csv('classified_data.csv', index=False, encoding='utf-8')
+print("\nSaved to classified_data.csv")
