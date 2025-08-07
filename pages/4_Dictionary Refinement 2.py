@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-import json
 import time
 from typing import List, Dict, Tuple, Optional
 import nltk
@@ -85,7 +84,7 @@ def preprocess_text(text: str) -> str:
     return str(text).lower().strip()
 
 @st.cache_data
-def generate_mock_dictionary(tactic: str, _sample_texts: List[str] = None) -> List[str]:
+def generate_mock_dictionary(tactic: str) -> List[str]:
     """Generate mock dictionary with caching"""
     stop_words = get_stopwords()
     tactic_words = re.findall(r'\b[a-zA-Z]{4,}\b', tactic.lower())
@@ -125,6 +124,20 @@ def classify_texts(texts: List[str], keywords: List[str]) -> List[Dict]:
     
     return results
 
+def find_text_column(df):
+    """Find the text column in dataframe"""
+    for col in df.columns:
+        if any(word in col.lower() for word in ['statement', 'text', 'content']):
+            return col
+    return None
+
+def find_id_column(df):
+    """Find the ID column in dataframe"""
+    for col in df.columns:
+        if 'id' in col.lower():
+            return col
+    return None
+
 # Initialize session state with defaults
 def init_session_state():
     """Initialize session state with proper defaults"""
@@ -134,20 +147,17 @@ def init_session_state():
         'csv_data': pd.DataFrame(),
         'dictionary': [],
         'classification_results': pd.DataFrame(),
-        'dictionary_prompt': 'Generate a list of single-word (unigram) keywords for a text classification dictionary focused on the "tactic" based on the "context"',
-        'processing': False
+        'dictionary_prompt': 'Generate a list of single-word (unigram) keywords for a text classification dictionary focused on the "tactic" based on the "context"'
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
-# Navigation helpers
 def go_to_step(step_num: int):
     """Safe step navigation"""
     if 1 <= step_num <= 5:
         st.session_state.step = step_num
-        st.rerun()
 
 def reset_app():
     """Reset application state"""
@@ -155,9 +165,7 @@ def reset_app():
         if key.startswith(('step', 'tactic', 'csv', 'dictionary', 'classification')):
             del st.session_state[key]
     init_session_state()
-    st.rerun()
 
-# UI Components
 def render_progress_indicator():
     """Render progress indicator"""
     steps = ["Define Tactic", "Upload Data", "Generate Dictionary", "Edit Dictionary", "View Results"]
@@ -203,8 +211,8 @@ def render_sidebar():
         st.divider()
         if st.button("🔄 Reset App", key="sidebar_reset"):
             reset_app()
+            st.rerun()
 
-# Step Components
 def step1_define_tactic():
     """Step 1: Define Tactic with form"""
     st.header("📝 Step 1: Define Your Tactic")
@@ -218,75 +226,12 @@ def step1_define_tactic():
             height=100
         )
         
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            submitted = st.form_submit_button("Next Step", disabled=not tactic_definition.strip())
+        submitted = st.form_submit_button("Next Step", disabled=not tactic_definition.strip())
         
         if submitted and tactic_definition.strip():
             st.session_state.tactic_definition = tactic_definition
             go_to_step(2)
-
-def step2_upload_data():
-    """Step 2: Upload Data with improved handling"""
-    st.header("📂 Step 2: Upload Sample Data")
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        # Use tabs for different input methods
-        tab1, tab2 = st.tabs(["📁 Upload File", "📝 Paste Data"])
-        
-        with tab1:
-            uploaded_file = st.file_uploader(
-                "Upload CSV file",
-                type=['csv'],
-                help="CSV must contain 'ID' and 'Statement' columns"
-            )
-            
-            if uploaded_file is not None:
-                process_uploaded_file(uploaded_file)
-        
-        with tab2:
-            with st.form("csv_input_form"):
-                csv_text = st.text_area(
-                    "CSV Data",
-                    placeholder='ID,Statement\n1,"This is a sample statement"\n2,"Another example statement"',
-                    height=200
-                )
-                
-                if st.form_submit_button("Parse CSV") and csv_text.strip():
-                    process_csv_text(csv_text)
-        
-        # CSV format help
-        with st.expander("💡 CSV Formatting Tips"):
-            st.markdown("""
-            **Common issues and solutions:**
-            - **Text with commas**: Wrap in quotes → `"This text, has commas"`
-            - **Text with quotes**: Escape with double quotes → `"He said ""hello"""`
-            - **Different delimiters**: Try semicolon (;) or tab-separated
-            
-            **Required columns:**
-            - An ID column (can be named: ID, id, Id, etc.)
-            - A text column (can be named: Statement, Text, Content, etc.)
-            """)
-    
-    with col2:
-        if not st.session_state.csv_data.empty:
-            st.markdown("**Preview:**")
-            st.dataframe(st.session_state.csv_data.head(), use_container_width=True)
-            
-            st.markdown("**Data Info:**")
-            st.metric("Rows", len(st.session_state.csv_data))
-            st.metric("Columns", len(st.session_state.csv_data.columns))
-    
-    # Navigation
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("← Back", key="step2_back"):
-            go_to_step(1)
-    with col2:
-        if st.button("Next Step →", disabled=st.session_state.csv_data.empty, key="step2_next"):
-            go_to_step(3)
+            st.rerun()
 
 def process_uploaded_file(uploaded_file):
     """Process uploaded CSV file"""
@@ -328,6 +273,89 @@ def process_csv_text(csv_text):
     except Exception as e:
         st.error(f"❌ Error parsing CSV: {str(e)}")
 
+def step2_upload_data():
+    """Step 2: Upload Data with improved handling"""
+    st.header("📂 Step 2: Upload Sample Data")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        tab1, tab2 = st.tabs(["📁 Upload File", "📝 Paste Data"])
+        
+        with tab1:
+            uploaded_file = st.file_uploader(
+                "Upload CSV file",
+                type=['csv'],
+                help="CSV must contain 'ID' and 'Statement' columns"
+            )
+            
+            if uploaded_file is not None:
+                process_uploaded_file(uploaded_file)
+        
+        with tab2:
+            with st.form("csv_input_form"):
+                csv_text = st.text_area(
+                    "CSV Data",
+                    placeholder='ID,Statement\n1,"This is a sample statement"\n2,"Another example statement"',
+                    height=200
+                )
+                
+                if st.form_submit_button("Parse CSV") and csv_text.strip():
+                    process_csv_text(csv_text)
+        
+        with st.expander("💡 CSV Formatting Tips"):
+            st.markdown("""
+            **Common issues and solutions:**
+            - **Text with commas**: Wrap in quotes → `"This text, has commas"`
+            - **Text with quotes**: Escape with double quotes → `"He said ""hello"""`
+            - **Different delimiters**: Try semicolon (;) or tab-separated
+            
+            **Required columns:**
+            - An ID column (can be named: ID, id, Id, etc.)
+            - A text column (can be named: Statement, Text, Content, etc.)
+            """)
+    
+    with col2:
+        if not st.session_state.csv_data.empty:
+            st.markdown("**Preview:**")
+            st.dataframe(st.session_state.csv_data.head(), use_container_width=True)
+            
+            st.markdown("**Data Info:**")
+            st.metric("Rows", len(st.session_state.csv_data))
+            st.metric("Columns", len(st.session_state.csv_data.columns))
+    
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("← Back", key="step2_back"):
+            go_to_step(1)
+            st.rerun()
+    with col2:
+        if st.button("Next Step →", disabled=st.session_state.csv_data.empty, key="step2_next"):
+            go_to_step(3)
+            st.rerun()
+
+def generate_dictionary(prompt, api_key):
+    """Generate dictionary with progress indicator"""
+    st.session_state.dictionary_prompt = prompt
+    
+    with st.spinner("Generating dictionary..."):
+        try:
+            if api_key:
+                time.sleep(2)
+                keywords = generate_mock_dictionary(st.session_state.tactic_definition)
+            else:
+                st.info("Using mock generation (add Claude API key for real AI generation)")
+                keywords = generate_mock_dictionary(st.session_state.tactic_definition)
+            
+            st.session_state.dictionary = keywords
+            st.success("✅ Dictionary generated successfully!")
+            time.sleep(1)
+            go_to_step(4)
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"❌ Error generating dictionary: {str(e)}")
+
 def step3_generate_dictionary():
     """Step 3: Generate Dictionary"""
     st.header("🧠 Step 3: Generate Dictionary")
@@ -345,12 +373,9 @@ def step3_generate_dictionary():
             help="Leave empty to use mock generation"
         )
         
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.form_submit_button("🧠 Generate Dictionary"):
-                generate_dictionary(prompt, api_key)
+        if st.form_submit_button("🧠 Generate Dictionary"):
+            generate_dictionary(prompt, api_key)
     
-    # Preview section
     with st.expander("📋 Preview", expanded=True):
         st.markdown(f"**Tactic:** {st.session_state.tactic_definition}")
         st.markdown(f"**Sample Data:** {len(st.session_state.csv_data)} statements")
@@ -362,40 +387,11 @@ def step3_generate_dictionary():
                 for i, text in enumerate(st.session_state.csv_data[text_col].head(3)):
                     st.markdown(f"{i+1}. {str(text)[:100]}...")
     
-    # Navigation
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("← Back", key="step3_back"):
             go_to_step(2)
-
-def generate_dictionary(prompt, api_key):
-    """Generate dictionary with progress indicator"""
-    st.session_state.dictionary_prompt = prompt
-    
-    with st.spinner("Generating dictionary..."):
-        try:
-            if api_key:
-                # Placeholder for actual API call
-                time.sleep(2)
-                keywords = generate_mock_dictionary(st.session_state.tactic_definition)
-            else:
-                st.info("Using mock generation (add Claude API key for real AI generation)")
-                keywords = generate_mock_dictionary(st.session_state.tactic_definition)
-            
-            st.session_state.dictionary = keywords
-            st.success("✅ Dictionary generated successfully!")
-            time.sleep(1)
-            go_to_step(4)
-            
-        except Exception as e:
-            st.error(f"❌ Error generating dictionary: {str(e)}")
-
-def find_text_column(df):
-    """Find the text column in dataframe"""
-    for col in df.columns:
-        if any(word in col.lower() for word in ['statement', 'text', 'content']):
-            return col
-    return None
+            st.rerun()
 
 def step4_edit_dictionary():
     """Step 4: Edit Dictionary with improved UX"""
@@ -404,7 +400,6 @@ def step4_edit_dictionary():
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        # Add keyword form
         with st.form("add_keyword_form"):
             new_keyword = st.text_input("Add new keyword:")
             if st.form_submit_button("➕ Add Keyword") and new_keyword.strip():
@@ -415,20 +410,17 @@ def step4_edit_dictionary():
                 else:
                     st.warning("Keyword already exists!")
         
-        # Display dictionary with batch operations
         st.markdown(f"**Dictionary Keywords ({len(st.session_state.dictionary)}):**")
         
         if st.session_state.dictionary:
-            # Use container for better performance
-            with st.container():
-                for i, keyword in enumerate(st.session_state.dictionary):
-                    col_key, col_remove = st.columns([4, 1])
-                    with col_key:
-                        st.text(f"🔸 {keyword}")
-                    with col_remove:
-                        if st.button("❌", key=f"remove_{i}"):
-                            st.session_state.dictionary.remove(keyword)
-                            st.rerun()
+            for i, keyword in enumerate(st.session_state.dictionary):
+                col_key, col_remove = st.columns([4, 1])
+                with col_key:
+                    st.text(f"🔸 {keyword}")
+                with col_remove:
+                    if st.button("❌", key=f"remove_{i}"):
+                        st.session_state.dictionary.remove(keyword)
+                        st.rerun()
         else:
             st.info("No keywords yet. Generate some or add manually.")
     
@@ -436,16 +428,17 @@ def step4_edit_dictionary():
         st.markdown("**Quick Actions:**")
         if st.button("🔄 Regenerate"):
             go_to_step(3)
+            st.rerun()
         
         if st.button("🗑️ Clear All"):
             st.session_state.dictionary = []
             st.rerun()
     
-    # Navigation
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("← Back", key="step4_back"):
             go_to_step(3)
+            st.rerun()
     with col2:
         if st.button("🔍 Classify", disabled=len(st.session_state.dictionary) == 0, key="step4_classify"):
             perform_classification()
@@ -454,12 +447,7 @@ def perform_classification():
     """Perform text classification"""
     with st.spinner("Classifying statements..."):
         text_col = find_text_column(st.session_state.csv_data)
-        id_col = None
-        
-        for col in st.session_state.csv_data.columns:
-            if 'id' in col.lower():
-                id_col = col
-                break
+        id_col = find_id_column(st.session_state.csv_data)
         
         texts = st.session_state.csv_data[text_col].tolist() if text_col else []
         classifications = classify_texts(texts, st.session_state.dictionary)
@@ -481,12 +469,12 @@ def perform_classification():
         st.success("✅ Classification complete!")
         time.sleep(1)
         go_to_step(5)
+        st.rerun()
 
 def step5_view_results():
     """Step 5: View Results with enhanced visualization"""
     st.header("📊 Step 5: Classification Results")
     
-    # Metrics
     results_df = st.session_state.classification_results
     total = len(results_df)
     matches = len(results_df[results_df['Classification'] == 'Match'])
@@ -501,7 +489,6 @@ def step5_view_results():
     with col4:
         st.metric("Keywords Used", len(st.session_state.dictionary))
     
-    # Export functionality
     col1, col2 = st.columns([1, 4])
     with col1:
         if st.download_button(
@@ -512,14 +499,12 @@ def step5_view_results():
         ):
             st.success("Results exported!")
     
-    # Filters
     col1, col2 = st.columns(2)
     with col1:
         show_matches_only = st.checkbox("Show matches only")
     with col2:
         min_score = st.slider("Minimum score", 0, 10, 0)
     
-    # Filter and display results
     filtered_df = results_df.copy()
     if show_matches_only:
         filtered_df = filtered_df[filtered_df['Classification'] == 'Match']
@@ -527,7 +512,6 @@ def step5_view_results():
     
     st.markdown(f"**Showing {len(filtered_df)} of {total} statements**")
     
-    # Paginated results
     page_size = 10
     total_pages = (len(filtered_df) - 1) // page_size + 1 if len(filtered_df) > 0 else 1
     
@@ -539,7 +523,6 @@ def step5_view_results():
     else:
         page_df = filtered_df
     
-    # Display results
     for _, result in page_df.iterrows():
         with st.expander(
             f"ID: {result['ID']} - {result['Classification']} (Score: {result['Score']})",
@@ -549,16 +532,16 @@ def step5_view_results():
             if result['MatchedKeywords']:
                 st.markdown(f"**Matched keywords:** {', '.join(result['MatchedKeywords'])}")
     
-    # Navigation
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("← Edit Dictionary", key="step5_back"):
             go_to_step(4)
+            st.rerun()
     with col2:
         if st.button("🔄 Start New", key="step5_reset"):
             reset_app()
+            st.rerun()
 
-# Main Application
 def main():
     """Main application function"""
     init_session_state()
@@ -569,7 +552,6 @@ def main():
     render_progress_indicator()
     st.divider()
     
-    # Route to appropriate step
     step_functions = {
         1: step1_define_tactic,
         2: step2_upload_data,
