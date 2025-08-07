@@ -4,6 +4,7 @@ import re
 from typing import Dict, Set, List
 import json
 import io
+import chardet
 
 # Set page config
 st.set_page_config(
@@ -28,6 +29,62 @@ if 'dictionaries' not in st.session_state:
             'insider', 'private sale', 'early access'
         }
     }
+
+def smart_csv_reader(file):
+    """Smart CSV reader with encoding detection and fallback options."""
+    
+    # Reset file pointer
+    file.seek(0)
+    bytes_data = file.read()
+    
+    # Try auto-detection first
+    try:
+        result = chardet.detect(bytes_data)
+        detected_encoding = result['encoding']
+        confidence = result['confidence']
+        
+        if confidence > 0.7:  # High confidence
+            string_data = bytes_data.decode(detected_encoding)
+            df = pd.read_csv(io.StringIO(string_data))
+            st.success(f"✅ File loaded with auto-detected encoding: {detected_encoding} (confidence: {confidence:.2f})")
+            return df, detected_encoding
+    except Exception as e:
+        st.warning(f"Auto-detection failed: {e}")
+    
+    # Fallback to common encodings
+    encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+    
+    for encoding in encodings_to_try:
+        try:
+            string_data = bytes_data.decode(encoding)
+            df = pd.read_csv(io.StringIO(string_data))
+            st.warning(f"⚠️ File loaded with fallback encoding: {encoding}")
+            return df, encoding
+        except:
+            continue
+    
+    # Last resort - use error handling
+    try:
+        string_data = bytes_data.decode('utf-8', errors='replace')
+        df = pd.read_csv(io.StringIO(string_data))
+        st.error("⚠️ Loaded with UTF-8 and replaced invalid characters. Some data may be corrupted.")
+        return df, "utf-8 (with errors replaced)"
+    except Exception as e:
+        st.error(f"❌ Could not read file: {e}")
+        return None, None
+
+def manual_encoding_reader(file, encoding):
+    """Read CSV with manually specified encoding."""
+    try:
+        file.seek(0)
+        bytes_data = file.read()
+        string_data = bytes_data.decode(encoding)
+        df = pd.read_csv(io.StringIO(string_data))
+        return df, None
+    except UnicodeDecodeError as e:
+        return None, f"Unicode decode error: {e}"
+    except Exception as e:
+        return None, f"Error: {e}"
 
 def classify_text(text: str, dictionaries: Dict[str, Set[str]]) -> Dict[str, List[str]]:
     """Classify text against multiple dictionaries."""
@@ -155,11 +212,39 @@ def main():
         uploaded_file = st.file_uploader("Choose a CSV file", type=['csv'])
 
         if uploaded_file is not None:
-            try:
-                # Read the CSV file
-                df = pd.read_csv(uploaded_file)
+            # Encoding options
+            st.subheader("🔧 Encoding Options")
+            encoding_method = st.radio(
+                "Choose encoding method:",
+                ["Auto-detect (recommended)", "Manual selection"],
+                horizontal=True
+            )
+            
+            df = None
+            encoding_used = None
+            
+            if encoding_method == "Auto-detect (recommended)":
+                with st.spinner("Reading file with auto-detection..."):
+                    df, encoding_used = smart_csv_reader(uploaded_file)
+            else:
+                # Manual encoding selection
+                encoding_options = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+                selected_encoding = st.selectbox("Select file encoding:", encoding_options)
+                
+                if st.button("Load with selected encoding"):
+                    with st.spinner(f"Reading file with {selected_encoding} encoding..."):
+                        df, error = manual_encoding_reader(uploaded_file, selected_encoding)
+                        if df is not None:
+                            encoding_used = selected_encoding
+                            st.success(f"✅ File loaded successfully with {selected_encoding} encoding!")
+                        else:
+                            st.error(f"❌ Error with {selected_encoding} encoding: {error}")
+                            st.info("💡 Try a different encoding or use auto-detection.")
 
-                st.success(f"File uploaded successfully! Shape: {df.shape}")
+            if df is not None:
+                st.success(f"📊 File loaded successfully! Shape: {df.shape}")
+                if encoding_used:
+                    st.info(f"📝 Encoding used: {encoding_used}")
 
                 # Column selection
                 text_columns = df.select_dtypes(include=['object']).columns.tolist()
@@ -189,9 +274,6 @@ def main():
                                 st.error(f"Error during classification: {e}")
                 else:
                     st.error("No text columns found in the dataset")
-
-            except Exception as e:
-                st.error(f"Error reading file: {e}")
 
     with col2:
         st.header("📖 Current Dictionaries")
