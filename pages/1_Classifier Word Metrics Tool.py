@@ -1,126 +1,4 @@
-if st.session_state.keywords:
-            st.subheader("🔤 Keywords")
-            st.write(f"**Count:** {len(st.session_state.keywords)}")
-            st.write(f"**Sample:** {', '.join(st.session_state.keywords[:5])}...")
-            
-        if st.session_state.classifiers:
-            st.subheader("🎯 Classifiers")
-            st.write(f"**Count:** {len(st.session_state.classifiers)}")
-            st.write(f"**Expected columns:** {', '.join([f'has_{c.lower()}' for c in st.session_state.classifiers])}")
-    
-    # Debug output
-    if debug_mode and st.session_state.debug_output:
-        st.subheader("🔍 Debug Information")
-        st.code(st.session_state.debug_output, language="text")
-    
-    # Results section
-    if st.session_state.statement_metrics is not None:
-        st.header("📊 Results")
-        
-        # Metrics selection tabs
-        tab1, tab2 = st.tabs(["📋 Statement-Level Metrics", "📊 ID-Level Aggregated Metrics"])
-        
-        with tab1:
-            df = st.session_state.statement_metrics
-            
-            # Statistics overview for statement-level
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                st.metric(
-                    label="Total Statements",
-                    value=f"{len(df):,}",
-                    delta=None
-                )
-            
-            with col2:
-                if 'Binary Match' in df.columns:
-                    total_matches = len(df[df['Binary Match'] == 1])
-                    match_rate = (total_matches / len(df) * 100) if len(df) > 0 else 0
-                    st.metric(
-                        label="Keyword Matches",
-                        value=f"{total_matches:,}",
-                        delta=f"{match_rate:.1f}%"
-                    )
-                else:
-                    st.metric(label="Keyword Matches", value="N/A")
-            
-            with col3:
-                if 'Dict Word %' in df.columns:
-                    avg_dict_pct = df['Dict Word %'].mean()
-                    st.metric(
-                        label="Avg Dict Word %",
-                        value=f"{avg_dict_pct:.1f}%",
-                        delta=None
-                    )
-                else:
-                    st.metric(label="Avg Dict Word %", value="N/A")
-            
-            with col4:
-                if 'LLM Score' in df.columns:
-                    avg_llm_score = df['LLM Score'].mean()
-                    st.metric(
-                        label="Avg LLM Score",
-                        value=f"{avg_llm_score:.1f}",
-                        delta=None
-                    )
-                else:
-                    st.metric(label="Avg LLM Score", value="N/A")
-            
-            with col5:
-                unique_posts = df['Post ID'].nunique()
-                st.metric(
-                    label="Unique Posts",
-                    value=f"{unique_posts:,}",
-                    delta=None
-                )
-            
-            # Data table with filtering
-            st.subheader("📋 Statement-Level Data")
-            
-            # Filter controls
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                filter_text = st.text_input("🔍 Filter results (search any column):", key="filter_input_stmt")
-            with col2:
-                if 'Binary Match' in df.columns:
-                    show_matches_only = st.checkbox("Show keyword matches only", key="matches_filter_stmt")
-                else:
-                    show_matches_only = False
-            
-            # Apply filters
-            filtered_df = df.copy()
-            
-            if filter_text:
-                mask = filtered_df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False, na=False)).any(axis=1)
-                filtered_df = filtered_df[mask]
-            
-            if show_matches_only and 'Binary Match' in df.columns:
-                filtered_df = filtered_df[filtered_df['Binary Match'] == 1]
-            
-            # Display table
-            st.dataframe(
-                filtered_df,
-                use_container_width=True,
-                height=400
-            )
-            
-            st.write(f"Showing {len(filtered_df):,} of {len(df):,} rows")
-            
-            # Download options for statement-level
-            col1, col2 = st.columns(2)
-            with col1:
-                csv_data = df.to_csv(index=False)
-                st.download_button(
-                    label="💾 Download Statement-Level CSV",
-                    data=csv_data,
-                    file_name=f"statement_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            
-            with col2:
-                excel_data =import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -322,7 +200,7 @@ def process_data(csv_data_dict, keywords_list, classifiers_list, debug_mode=Fals
     csv_data = pd.DataFrame(csv_data_dict)
     
     if csv_data.empty or (len(keywords_list) == 0 and len(classifiers_list) == 0):
-        return None, None, None, "No data or keywords/classifiers provided"
+        return None, None, "No data or keywords/classifiers provided"
     
     debug_output = ""
     
@@ -333,7 +211,7 @@ def process_data(csv_data_dict, keywords_list, classifiers_list, debug_mode=Fals
     
     if not statement_col or not post_id_col:
         available_cols = list(csv_data.columns)
-        return None, None, None, f"Required columns not found. Available columns: {available_cols}"
+        return None, None, f"Required columns not found. Available columns: {available_cols}"
     
     # Find classifier columns
     classifier_columns = {}
@@ -993,6 +871,10 @@ def main():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+# Footer
+st.markdown("---")
+st.markdown("Built with ❤️ using Streamlit")
 
 # Run the app
 if __name__ == "__main__":
