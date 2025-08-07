@@ -3,806 +3,789 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from io import StringIO
+from plotly.subplots import make_subplots
 import re
-import random
 from collections import Counter
-import hashlib
-import time
+from textblob import TextBlob
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-# Set page config
 st.set_page_config(
-    page_title="💖 Classifier Word Metrics Tool",
-    page_icon="💖",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Classifier Word Metrics Tool",
+    page_icon="📊",
+    layout="wide"
 )
 
-# Custom CSS styling
-st.markdown("""
-<style>
-    .main-header {
-        background: linear-gradient(135deg, #ff69b4 0%, #ff1493 50%, #dc143c 100%);
-        padding: 2rem;
-        border-radius: 15px;
-        color: white;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    
-    .metric-card {
-        background: linear-gradient(135deg, #ff69b4, #ff1493);
-        padding: 1rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin: 0.5rem 0;
-    }
-    
-    .metric-number {
-        font-size: 2rem;
-        font-weight: bold;
-        margin-bottom: 0.5rem;
-    }
-    
-    .metric-label {
-        font-size: 0.9rem;
-        opacity: 0.9;
-    }
-    
-    .success-box {
-        background-color: #fdf2f8;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #ff69b4;
-        margin: 1rem 0;
-    }
-    
-    .debug-box {
-        background-color: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        font-family: monospace;
-        font-size: 12px;
-        max-height: 300px;
-        overflow-y: auto;
-        margin: 1rem 0;
-    }
-    
-    /* Hide Streamlit default elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
+st.title("🔍 Classifier Word Metrics Tool")
+st.markdown("Convert binary classification to continuous measures with word-level analysis")
 
-# Initialize session state with proper defaults
-def initialize_session_state():
-    """Initialize session state variables"""
-    if 'processed_data' not in st.session_state:
-        st.session_state.processed_data = None
-    if 'csv_data' not in st.session_state:
-        st.session_state.csv_data = None
-    if 'keywords' not in st.session_state:
-        st.session_state.keywords = []
-    if 'data_hash' not in st.session_state:
-        st.session_state.data_hash = None
-    if 'keywords_hash' not in st.session_state:
-        st.session_state.keywords_hash = None
+# Sidebar for file uploads
+st.sidebar.header("📂 Data Upload")
 
-# Utility functions
-@st.cache_data
-def get_file_hash(file_contents):
-    """Generate hash for file contents to detect changes"""
-    return hashlib.md5(file_contents).hexdigest()
+# Input method selection
+input_method = st.sidebar.radio(
+    "📂 Choose Input Method:",
+    ["Ground Truth Data", "IG Posts Data"],
+    help="Select your data source type"
+)
 
-@st.cache_data
-def get_keywords_hash(keywords):
-    """Generate hash for keywords to detect changes"""
-    return hashlib.md5(''.join(sorted(keywords)).encode()).hexdigest()
+# Initialize data_file variable
+data_file = None
 
-# Mock LLM rating function
-@st.cache_data
-def rate_with_llm(statement):
-    """Mock LLM implementation - returns random score between 1-5"""
-    # Use statement as seed for consistent results
-    random.seed(hash(statement) % 2**32)
+if input_method == "Ground Truth Data":
+    data_file = st.sidebar.file_uploader(
+        "Upload Ground Truth CSV", 
+        type=['csv'], 
+        key="ground_truth",
+        help="Upload CSV with columns: ID, Turn, Statement, Mode (binary 0/1)"
+    )
+    st.sidebar.info("✅ Expected columns: ID, Turn, Statement, Mode")
     
-    personalized_words = ['custom', 'personal', 'tailored', 'individual', 'unique', 'specific']
-    lower_statement = statement.lower()
-    
-    base_score = 1
-    for word in personalized_words:
-        if word in lower_statement:
-            base_score += random.random() * 0.8 + 0.2
-    
-    return min(5, max(1, base_score + (random.random() - 0.5) * 0.5))
+else:  # IG Posts Data
+    data_file = st.sidebar.file_uploader(
+        "Upload IG Posts CSV", 
+        type=['csv'], 
+        key="ig_posts", 
+        help="Upload Instagram posts data with text content and engagement metrics"
+    )
+    st.sidebar.info("ℹ️ Will process post content and generate classifications")
 
-# Optimized file processing functions
-@st.cache_data
-def detect_encoding(file_contents):
-    """Detect file encoding using chardet if available, otherwise try common encodings"""
-    try:
-        import chardet
-        result = chardet.detect(file_contents[:10000])  # Sample first 10KB
-        confidence = result.get('confidence', 0)
-        detected_encoding = result.get('encoding', 'utf-8')
-        
-        if confidence > 0.7:
-            return [detected_encoding, 'utf-8', 'latin-1', 'windows-1252']
-        else:
-            return ['utf-8', detected_encoding, 'latin-1', 'windows-1252']
-    except ImportError:
-        return ['utf-8', 'latin-1', 'windows-1252', 'cp1252', 'iso-8859-1']
+# Initialize session state for processed data
+if 'processed_data' not in st.session_state:
+    st.session_state.processed_data = None
 
-@st.cache_data
-def process_csv_content(file_contents, filename, _encodings_to_try):
-    """Process CSV content with caching for performance"""
-    for encoding in _encodings_to_try:
+def safe_read_csv(file, encodings=['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']):
+    """
+    Safely read CSV file with multiple encoding attempts
+    """
+    for encoding in encodings:
         try:
-            content = file_contents.decode(encoding)
-            df = pd.read_csv(StringIO(content))
-            return df, encoding, None
-        except (UnicodeDecodeError, UnicodeError):
+            # Reset file pointer
+            file.seek(0)
+            df = pd.read_csv(file, encoding=encoding)
+            st.success(f"✅ File loaded successfully with {encoding} encoding")
+            return df
+        except UnicodeDecodeError:
             continue
         except Exception as e:
-            if "codec can't decode" not in str(e).lower():
-                return None, encoding, str(e)
+            st.error(f"Error with {encoding}: {str(e)}")
+            continue
     
-    return None, None, "Could not decode with any encoding"
+    # If all encodings fail
+    st.error("❌ Could not read file with any supported encoding. Please check your file format.")
+    return None
 
-def process_csv_files(uploaded_files):
-    """Process uploaded CSV files with optimization"""
-    if not uploaded_files:
+def detect_ig_posts_structure(df):
+    """
+    Detect and adapt IG posts data structure
+    """
+    # Common column name variations for IG posts
+    text_columns = ['caption', 'text', 'content', 'post_text', 'description', 'message']
+    id_columns = ['id', 'post_id', 'ig_id', 'shortcode', 'post_shortcode']
+    
+    # Find text column
+    text_col = None
+    for col in df.columns:
+        if col.lower() in text_columns or 'text' in col.lower() or 'caption' in col.lower():
+            text_col = col
+            break
+    
+    # Find ID column  
+    id_col = None
+    for col in df.columns:
+        if col.lower() in id_columns or 'id' in col.lower():
+            id_col = col
+            break
+    
+    if not text_col:
+        st.error("❌ Could not find text/caption column in IG posts data")
+        st.write("Available columns:", list(df.columns))
+        return None, None
+        
+    if not id_col:
+        st.warning("⚠️ Could not find ID column, will generate sequential IDs")
+        
+    return text_col, id_col
+
+def extract_personalized_keywords(text):
+    """Extract keywords that indicate personalization"""
+    personalized_keywords = [
+        'custom', 'personalized', 'tailored', 'bespoke', 'individual', 'unique',
+        'customized', 'made for you', 'personal', 'special', 'exclusive',
+        'one-of-a-kind', 'handmade', 'curated', 'designed for', 'your style',
+        'perfect for you', 'just for you', 'match your', 'fit your'
+    ]
+    
+    if pd.isna(text) or text == "":
+        return []
+    
+    text_lower = str(text).lower()
+    found_keywords = []
+    
+    for keyword in personalized_keywords:
+        if keyword in text_lower:
+            found_keywords.append(keyword)
+    
+    return found_keywords
+
+def convert_ig_posts_to_ground_truth(df, text_col, id_col=None):
+    """
+    Convert IG posts data to ground truth format
+    """
+    processed_rows = []
+    
+    for idx, row in df.iterrows():
+        # Get post ID
+        post_id = row[id_col] if id_col else f"post_{idx:04d}"
+        
+        # Get text content
+        text_content = row[text_col] if pd.notna(row[text_col]) else ""
+        
+        # Split text into sentences/statements
+        sentences = re.split(r'[.!?]+', str(text_content))
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        # If no sentences found, use the whole text as one statement
+        if not sentences:
+            sentences = [str(text_content)]
+        
+        # Create statements with auto-classification
+        for turn, statement in enumerate(sentences, 1):
+            if statement.strip():
+                # Auto-classify based on personalization keywords
+                keywords = extract_personalized_keywords(statement)
+                mode = 1 if keywords else 0
+                
+                processed_rows.append({
+                    'ID': str(post_id),
+                    'Turn': turn,
+                    'Statement': statement.strip(),
+                    'Mode': mode,
+                    'auto_classified': True
+                })
+    
+    return pd.DataFrame(processed_rows)
+
+def preprocess_text(text):
+    """Clean and preprocess text"""
+    if pd.isna(text) or text == "":
+        return ""
+    # Remove extra whitespace and convert to lowercase
+    text = re.sub(r'\s+', ' ', str(text)).strip().lower()
+    return text
+
+def calculate_personalization_strength(text, binary_classification):
+    """Calculate continuous personalization strength"""
+    if pd.isna(text) or text == "":
+        return 0.0
+    
+    keywords = extract_personalized_keywords(text)
+    keyword_score = len(keywords) * 0.2  # Each keyword adds 0.2
+    
+    # Base score from binary classification
+    base_score = float(binary_classification)
+    
+    # Combine scores (max 1.0)
+    total_score = min(base_score + keyword_score, 1.0)
+    
+    return total_score
+
+def analyze_sentiment(text):
+    """Analyze sentiment of text"""
+    if pd.isna(text) or text == "":
+        return {'polarity': 0, 'subjectivity': 0, 'sentiment': 'neutral'}
+    
+    try:
+        blob = TextBlob(str(text))
+        polarity = blob.sentiment.polarity
+        subjectivity = blob.sentiment.subjectivity
+        
+        if polarity > 0.1:
+            sentiment = 'positive'
+        elif polarity < -0.1:
+            sentiment = 'negative'
+        else:
+            sentiment = 'neutral'
+        
+        return {
+            'polarity': polarity,
+            'subjectivity': subjectivity,
+            'sentiment': sentiment
+        }
+    except:
+        return {'polarity': 0, 'subjectivity': 0, 'sentiment': 'neutral'}
+
+def process_data(data_file, input_method):
+    """Main data processing function"""
+    if not data_file:
+        st.warning("Please upload a data file to proceed.")
         return None
     
-    all_data = []
-    
-    for file in uploaded_files:
-        file_contents = file.read()
-        file_hash = get_file_hash(file_contents)
-        
-        # Check if we've already processed this file
-        cache_key = f"csv_{file.name}_{file_hash}"
-        
-        encodings_to_try = detect_encoding(file_contents)
-        df, encoding, error = process_csv_content(file_contents, file.name, encodings_to_try)
-        
-        if df is not None:
-            all_data.append(df)
-            st.success(f"✅ Successfully read {file.name} with {encoding} encoding")
-        else:
-            st.error(f"❌ Could not read {file.name}: {error}")
-            st.info("💡 Try saving the file as UTF-8 CSV format.")
-            return None
-    
-    if all_data:
-        combined_df = pd.concat(all_data, ignore_index=True)
-        return combined_df
-    return None
-
-@st.cache_data
-def process_keyword_content(file_contents, filename, _encodings_to_try):
-    """Process keyword file content with caching"""
-    for encoding in _encodings_to_try:
-        try:
-            if filename.endswith('.csv'):
-                content = file_contents.decode(encoding)
-                df = pd.read_csv(StringIO(content), header=None)
-                keywords = df.values.flatten().tolist()
-            else:
-                content = file_contents.decode(encoding)
-                keywords = re.split(r'[,\n\r]+', content)
-            
-            # Clean keywords
-            keywords = [word.strip() for word in keywords if word.strip()]
-            return keywords, encoding, None
-            
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-        except Exception as e:
-            if "codec can't decode" not in str(e).lower():
-                return None, encoding, str(e)
-    
-    return None, None, "Could not decode with any encoding"
-
-def process_keyword_file(uploaded_file):
-    """Process uploaded keyword file with optimization"""
-    if not uploaded_file:
-        return []
-    
-    file_contents = uploaded_file.read()
-    encodings_to_try = detect_encoding(file_contents)
-    
-    keywords, encoding, error = process_keyword_content(
-        file_contents, uploaded_file.name, encodings_to_try
-    )
-    
-    if keywords:
-        st.success(f"✅ Successfully read keyword file with {encoding} encoding")
-        return keywords
-    else:
-        st.error(f"❌ Could not read keyword file: {error}")
-        return []
-
-# Optimized column detection
-@st.cache_data
-def find_flexible_column(column_list, possible_names):
-    """Find column with flexible name matching - cached for performance"""
-    for name in possible_names:
-        for col in column_list:
-            if name.lower() in col.lower():
-                return col
-    return None
-
-# Main data processing function with caching
-@st.cache_data
-def process_data_cached(csv_data_dict, keywords_list, debug_mode=False):
-    """Cached version of data processing for performance"""
-    # Convert dict back to DataFrame (for caching compatibility)
-    csv_data = pd.DataFrame(csv_data_dict)
-    keywords = keywords_list
-    
-    if csv_data is None or len(keywords) == 0:
-        return None, "No data or keywords provided"
-    
-    debug_output = ""
-    
     try:
-        # Find columns flexibly
-        column_list = list(csv_data.columns)
-        statement_col = find_flexible_column(column_list, ['statement', 'text', 'content'])
-        post_id_col = find_flexible_column(column_list, ['post_id', 'post id', 'id', 'postid'])
-        word_count_col = find_flexible_column(column_list, ['word_count', 'word count', 'wordcount'])
+        # Load data with safe encoding detection
+        with st.spinner("Loading and detecting file encoding..."):
+            df = safe_read_csv(data_file)
+            if df is None:
+                return None
         
-        if debug_mode:
-            debug_output += f"Available columns: {column_list}\n"
-            debug_output += f"Found statement column: {statement_col}\n"
-            debug_output += f"Found post_id column: {post_id_col}\n"
-            debug_output += f"Found word_count column: {word_count_col}\n\n"
-        
-        if not statement_col or not post_id_col:
-            error_msg = f"Required columns not found.\n"
-            error_msg += f"Available columns: {column_list}\n"
-            error_msg += f"Looking for statement column in: ['statement', 'text', 'content']\n"
-            error_msg += f"Looking for post_id column in: ['post_id', 'post id', 'id', 'postid']\n"
-            error_msg += f"Found statement: {statement_col}, Found post_id: {post_id_col}"
-            return None, error_msg
-        
-        # Use vectorized operations for better performance
-        valid_mask = (
-            csv_data[statement_col].notna() & 
-            csv_data[post_id_col].notna() & 
-            (csv_data[statement_col].astype(str).str.strip() != '') &
-            (csv_data[post_id_col].astype(str).str.strip() != '')
-        )
-        
-        valid_data = csv_data[valid_mask].copy()
-        
-        if len(valid_data) == 0:
-            return None, "No valid rows found after filtering. Check that your data has non-empty statement and post_id columns."
-        
-        if debug_mode:
-            debug_output += f"Keywords ({len(keywords)}): {', '.join(keywords)}\n"
-            debug_output += f"CSV Data Rows: {len(csv_data)}\n"
-            debug_output += f"Valid rows after filtering: {len(valid_data)}\n"
-            debug_output += f"Using columns - Statement: {statement_col}, Post ID: {post_id_col}\n\n"
-        
-        # Vectorized keyword matching for performance
-        keywords_lower = [kw.lower() for kw in keywords]
-        valid_data['statement_lower'] = valid_data[statement_col].astype(str).str.lower()
-        
-        # Create binary match column
-        def check_keywords(text):
-            return any(kw in text for kw in keywords_lower)
-        
-        valid_data['has_match'] = valid_data['statement_lower'].apply(check_keywords)
-        
-        # Calculate post-level statistics efficiently
-        post_stats = valid_data.groupby(post_id_col).agg({
-            'has_match': ['count', 'sum']
-        }).round(2)
-        
-        post_stats.columns = ['total', 'matches']
-        post_stats['match_pct'] = (post_stats['matches'] / post_stats['total']) * 100
-        post_stats_dict = post_stats.to_dict('index')
-        
-        if debug_mode:
-            total_matches = valid_data['has_match'].sum()
-            debug_output += f"Total matches found: {total_matches}/{len(valid_data)}\n"
-            debug_output += f"Match rate: {(total_matches/len(valid_data)*100):.1f}%\n\n"
-        
-        # Process each row efficiently
-        processed_rows = []
-        
-        for _, row in valid_data.iterrows():
-            statement = str(row[statement_col])
-            post_id = str(row[post_id_col])
-            statement_lower = row['statement_lower']
+        # Process based on input method
+        if input_method == "Ground Truth Data":
+            # Validate ground truth structure
+            required_cols = ['ID', 'Turn', 'Statement', 'Mode']
+            missing_cols = [col for col in required_cols if col not in df.columns]
             
-            # Efficient word processing
-            words = re.findall(r'\b\w+\b', statement_lower)
-            word_count = row[word_count_col] if word_count_col and pd.notna(row[word_count_col]) else len(words)
-            
-            # Binary classification
-            binary_match = 1 if row['has_match'] else 0
-            
-            # Dictionary word percentage
-            matching_words = [word for word in words if any(
-                word == kw or kw in word or word in kw 
-                for kw in keywords_lower
-            )]
-            
-            dict_word_pct = (len(matching_words) / len(words)) * 100 if words else 0
-            
-            # Post match percentage
-            post_match_pct = post_stats_dict[post_id]['match_pct']
-            
-            # Mock LLM score (cached)
-            llm_score = rate_with_llm(statement)
-            
-            processed_rows.append({
-                'Post ID': post_id,
-                'Statement': statement,
-                'Binary Match': binary_match,
-                'Dict Word %': round(dict_word_pct, 2),
-                'Post Match %': round(post_match_pct, 2),
-                'LLM Score': round(llm_score, 2),
-                'Word Count': int(word_count)
-            })
-        
-        if debug_mode:
-            binary_matches = sum(1 for row in processed_rows if row['Binary Match'] == 1)
-            debug_output += f"Final Results:\n"
-            debug_output += f"Binary matches: {binary_matches}/{len(processed_rows)}\n"
-            
-            non_zero_dict = [row for row in processed_rows if row['Dict Word %'] > 0]
-            debug_output += f"Non-zero dict_word_pct: {len(non_zero_dict)}\n"
-            if non_zero_dict:
-                avg_dict = sum(row['Dict Word %'] for row in non_zero_dict) / len(non_zero_dict)
-                debug_output += f"Average dict_word_pct (non-zero): {avg_dict:.2f}%\n"
-        
-        return pd.DataFrame(processed_rows), debug_output
-        
-    except Exception as e:
-        error_msg = f"Error processing data: {str(e)}\n"
-        error_msg += f"Available columns: {list(csv_data.columns) if csv_data is not None else 'None'}\n"
-        error_msg += f"Data shape: {csv_data.shape if csv_data is not None else 'None'}"
-        return None, error_msg
-
-# Non-cached wrapper for UI
-def process_data(csv_data, keywords, debug_mode=False):
-    """Wrapper function that converts DataFrame to dict for caching"""
-    if csv_data is None:
-        return None, "No data provided"
-    
-    # Convert DataFrame to dict for caching compatibility
-    csv_data_dict = csv_data.to_dict('records')
-    return process_data_cached(csv_data_dict, keywords, debug_mode)
-
-# Optimized visualization functions
-@st.cache_data
-def create_histogram_data(dict_word_pcts):
-    """Create histogram data with caching"""
-    bins = 10
-    max_val = max(dict_word_pcts) if dict_word_pcts else 1
-    bin_size = max_val / bins
-    bin_counts = [0] * bins
-    bin_labels = []
-
-    for i in range(bins):
-        bin_labels.append(f"{(i * bin_size):.1f}-{((i + 1) * bin_size):.1f}%")
-
-    for pct in dict_word_pcts:
-        bin_index = min(int(pct / bin_size), bins - 1)
-        bin_counts[bin_index] += 1
-
-    return bin_labels, bin_counts
-
-@st.cache_data
-def calculate_classifier_strength(processed_data_dict):
-    """Calculate classifier strength metrics with caching"""
-    df = pd.DataFrame(processed_data_dict)
-    
-    # Calculate post-level metrics
-    post_metrics = df.groupby('Post ID').agg({
-        'Binary Match': ['count', 'sum'],
-        'Word Count': 'sum'
-    }).round(2)
-    
-    post_metrics.columns = ['total_statements', 'classified_statements', 'total_words']
-    post_metrics['statement_rate'] = (post_metrics['classified_statements'] / post_metrics['total_statements']) * 100
-    
-    # Calculate word-level classification rate
-    classifier_words_per_post = df.groupby('Post ID').apply(
-        lambda x: sum((x['Dict Word %'] / 100) * x['Word Count'])
-    )
-    post_metrics['word_rate'] = (classifier_words_per_post / post_metrics['total_words']) * 100
-    
-    avg_statement_rate = post_metrics['statement_rate'].mean()
-    avg_word_rate = post_metrics['word_rate'].mean()
-    
-    return avg_statement_rate, avg_word_rate
-
-# Header
-st.markdown("""
-<div class="main-header">
-    <h1>💖 Classifier Word Metrics Tool</h1>
-    <p>Analyze text data with keyword-based classification and advanced metrics</p>
-</div>
-""", unsafe_allow_html=True)
-
-# Initialize session state
-initialize_session_state()
-
-# Sidebar for file uploads and keywords
-with st.sidebar:
-    st.header("📁 Data Input")
-    
-    # CSV file upload
-    st.subheader("CSV Data Files")
-    csv_files = st.file_uploader(
-        "Upload CSV files with: statement, post_id, word_count (optional)",
-        type=['csv'],
-        accept_multiple_files=True,
-        key="csv_upload",
-        help="Supports multiple encodings (UTF-8, Latin-1, Windows-1252)"
-    )
-    
-    if csv_files:
-        with st.spinner("Reading CSV files..."):
-            new_csv_data = process_csv_files(csv_files)
-            if new_csv_data is not None:
-                # Check if data has changed
-                new_hash = get_file_hash(str(new_csv_data.values.tobytes()))
-                if st.session_state.data_hash != new_hash:
-                    st.session_state.csv_data = new_csv_data
-                    st.session_state.data_hash = new_hash
-                    st.session_state.processed_data = None  # Reset processed data
+            if missing_cols:
+                st.error(f"❌ Missing required columns: {missing_cols}")
+                st.write("Available columns:", list(df.columns))
+                return None
                 
-                st.success(f"✅ Successfully loaded {len(st.session_state.csv_data)} rows from {len(csv_files)} file(s)")
-                
-                # Show column information in expander
-                with st.expander("📋 Data Preview", expanded=False):
-                    st.write("**Available columns:**")
-                    cols = list(st.session_state.csv_data.columns)
-                    for i, col in enumerate(cols):
-                        st.write(f"{i+1}. `{col}`")
-                    
-                    st.write("**Sample data:**")
-                    st.dataframe(st.session_state.csv_data.head(3), use_container_width=True)
-            else:
-                st.error("❌ Failed to load CSV files. Please check the file encoding and format.")
-    
-    # Keywords input
-    st.subheader("Keywords Input")
-    
-    # Keyword file upload
-    keyword_file = st.file_uploader(
-        "Upload keyword file (.csv/.txt)",
-        type=['csv', 'txt'],
-        key="keyword_upload",
-        help="One keyword per line or comma-separated"
-    )
-    
-    if keyword_file:
-        uploaded_keywords = process_keyword_file(keyword_file)
-        if uploaded_keywords:
-            new_keywords_hash = get_keywords_hash(uploaded_keywords)
-            if st.session_state.keywords_hash != new_keywords_hash:
-                st.session_state.keywords = uploaded_keywords
-                st.session_state.keywords_hash = new_keywords_hash
-                st.session_state.processed_data = None  # Reset processed data
-            st.success(f"✅ Loaded {len(uploaded_keywords)} keywords")
-    
-    st.write("**— OR —**")
-    
-    # Manual keyword input
-    default_keywords = "custom, tailored, personalized, bespoke, individualized, customized, personal, unique, specialized, exclusive, made-to-order, one-of-a-kind"
-    
-    keywords_text = st.text_area(
-        "Enter keywords (comma or line separated):",
-        value=default_keywords,
-        height=150,
-        key="keywords_input",
-        help="Enter one keyword per line or separate with commas"
-    )
-    
-    if keywords_text and not keyword_file:
-        manual_keywords = [kw.strip() for kw in re.split(r'[,\n\r]+', keywords_text) if kw.strip()]
-        new_keywords_hash = get_keywords_hash(manual_keywords)
-        if st.session_state.keywords_hash != new_keywords_hash:
-            st.session_state.keywords = manual_keywords
-            st.session_state.keywords_hash = new_keywords_hash
-            st.session_state.processed_data = None  # Reset processed data
-    
-    # Debug mode
-    debug_mode = st.checkbox("Enable Debug Mode", help="Shows detailed matching information")
-    
-    # Performance settings
-    with st.expander("⚙️ Performance Settings"):
-        st.write("**Memory Usage:**")
-        if st.session_state.csv_data is not None:
-            memory_usage = st.session_state.csv_data.memory_usage(deep=True).sum() / 1024**2
-            st.write(f"CSV Data: {memory_usage:.1f} MB")
-        
-        if st.button("🗑️ Clear Cache", help="Clear all cached data to free memory"):
-            st.cache_data.clear()
-            st.success("Cache cleared!")
-
-# Main content area
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.header("🚀 Process Data")
-    
-    # Process button
-    process_button = st.button(
-        "🚀 Process Data & Generate Metrics", 
-        type="primary", 
-        use_container_width=True,
-        disabled=(st.session_state.csv_data is None or not st.session_state.keywords)
-    )
-    
-    if process_button:
-        if st.session_state.csv_data is None:
-            st.error("Please upload CSV files first!")
-        elif not st.session_state.keywords:
-            st.error("Please enter keywords or upload a keyword file!")
-        else:
-            # Check if we need to reprocess
-            current_data_hash = get_file_hash(str(st.session_state.csv_data.values.tobytes()))
-            current_keywords_hash = get_keywords_hash(st.session_state.keywords)
+            ground_truth_df = df.copy()
+            st.success(f"✅ Ground truth data loaded: {len(ground_truth_df)} statements")
             
-            need_reprocess = (
-                st.session_state.processed_data is None or
-                st.session_state.data_hash != current_data_hash or
-                st.session_state.keywords_hash != current_keywords_hash
+        else:  # IG Posts Data
+            # Detect IG posts structure
+            with st.spinner("Analyzing IG posts structure..."):
+                text_col, id_col = detect_ig_posts_structure(df)
+                if text_col is None:
+                    return None
+                
+                st.info(f"📝 Using text column: '{text_col}'")
+                if id_col:
+                    st.info(f"🆔 Using ID column: '{id_col}'")
+                else:
+                    st.info("🆔 Generating sequential IDs")
+            
+            # Convert to ground truth format
+            with st.spinner("Converting IG posts to ground truth format..."):
+                ground_truth_df = convert_ig_posts_to_ground_truth(df, text_col, id_col)
+                st.success(f"✅ Converted {len(df)} posts to {len(ground_truth_df)} statements")
+                
+                # Show auto-classification summary
+                auto_personalized = len(ground_truth_df[ground_truth_df['Mode'] == 1])
+                st.info(f"🤖 Auto-classified {auto_personalized} statements as personalized")
+        
+        # Process ground truth data
+        with st.spinner("Processing ground truth data..."):
+            ground_truth_df['statement_clean'] = ground_truth_df['Statement'].apply(preprocess_text)
+            ground_truth_df['word_count'] = ground_truth_df['statement_clean'].apply(lambda x: len(str(x).split()) if x else 0)
+            
+            # Calculate personalization strength
+            ground_truth_df['personalization_strength'] = ground_truth_df.apply(
+                lambda row: calculate_personalization_strength(row['Statement'], row['Mode']), axis=1
             )
             
-            if need_reprocess:
-                with st.spinner("Processing your data..."):
-                    start_time = time.time()
-                    
-                    try:
-                        processed_data, debug_output = process_data(
-                            st.session_state.csv_data, 
-                            st.session_state.keywords, 
-                            debug_mode
-                        )
-                        
-                        processing_time = time.time() - start_time
-                        
-                        if processed_data is not None:
-                            st.session_state.processed_data = processed_data
-                            st.session_state.data_hash = current_data_hash
-                            st.session_state.keywords_hash = current_keywords_hash
-                            
-                            st.success(f"✅ Data processed successfully in {processing_time:.2f}s!")
-                            
-                            if debug_mode and debug_output:
-                                st.subheader("🔍 Debug Information")
-                                st.text(debug_output)
-                        else:
-                            st.error("❌ Processing failed.")
-                            if debug_output:
-                                st.error(debug_output)
-                                
-                    except Exception as e:
-                        st.error(f"❌ An error occurred during processing: {str(e)}")
-                        st.info("💡 Please check your data format and try again. Enable debug mode for more details.")
-            else:
-                st.info("✅ Using cached results (data unchanged)")
-
-with col2:
-    if st.session_state.csv_data is not None:
-        st.subheader("📊 Data Info")
-        st.metric("Rows", len(st.session_state.csv_data))
-        st.metric("Columns", len(st.session_state.csv_data.columns))
+            # Extract personalized keywords
+            ground_truth_df['personalized_keywords'] = ground_truth_df['Statement'].apply(extract_personalized_keywords)
+            ground_truth_df['keyword_count'] = ground_truth_df['personalized_keywords'].apply(len)
+            
+            # Sentiment analysis
+            sentiment_data = ground_truth_df['Statement'].apply(analyze_sentiment)
+            ground_truth_df['sentiment_polarity'] = sentiment_data.apply(lambda x: x['polarity'])
+            ground_truth_df['sentiment_subjectivity'] = sentiment_data.apply(lambda x: x['subjectivity'])
+            ground_truth_df['sentiment_category'] = sentiment_data.apply(lambda x: x['sentiment'])
         
-        # Memory usage
-        memory_mb = st.session_state.csv_data.memory_usage(deep=True).sum() / 1024**2
-        st.metric("Memory", f"{memory_mb:.1f} MB")
+        # Create statement-level metrics
+        with st.spinner("Creating statement-level metrics..."):
+            statement_metrics = ground_truth_df.copy()
+            statement_metrics['personalized_word_percentage'] = (
+                statement_metrics['keyword_count'] / statement_metrics['word_count'].replace(0, 1) * 100
+            )
         
-    if st.session_state.keywords:
-        st.subheader("🔤 Keywords")
-        st.metric("Count", len(st.session_state.keywords))
-        with st.expander("View Keywords"):
-            st.write(", ".join(st.session_state.keywords[:10]))
-            if len(st.session_state.keywords) > 10:
-                st.write(f"... and {len(st.session_state.keywords) - 10} more")
+        # Aggregate to ID level
+        with st.spinner("Aggregating to ID level..."):
+            id_level_metrics = ground_truth_df.groupby('ID').agg({
+                'Mode': 'sum',  # Total personalized statements
+                'Turn': 'count',  # Total statements
+                'word_count': 'sum',  # Total words
+                'keyword_count': 'sum',  # Total personalized keywords
+                'personalization_strength': 'mean',  # Average strength
+                'sentiment_polarity': 'mean',  # Average sentiment
+                'sentiment_subjectivity': 'mean',
+                'Statement': lambda x: ' '.join(x)  # Concatenate all statements
+            }).reset_index()
+            
+            # Rename columns
+            id_level_metrics.columns = [
+                'ID', 'personalized_statements_count', 'total_statements', 'total_words',
+                'personalized_keywords_count', 'avg_personalization_strength',
+                'avg_sentiment_polarity', 'avg_sentiment_subjectivity', 'all_statements'
+            ]
+            
+            # Calculate percentages
+            id_level_metrics['personalized_statement_percentage'] = (
+                id_level_metrics['personalized_statements_count'] / 
+                id_level_metrics['total_statements'] * 100
+            )
+            
+            id_level_metrics['personalized_word_percentage'] = (
+                id_level_metrics['personalized_keywords_count'] / 
+                id_level_metrics['total_words'].replace(0, 1) * 100
+            )
+            
+            # Binary flag for having any personalized content
+            id_level_metrics['has_personalized_content'] = (
+                id_level_metrics['personalized_statements_count'] > 0
+            ).astype(int)
+        
+        return {
+            'ground_truth': ground_truth_df,
+            'statement_metrics': statement_metrics,
+            'id_level_metrics': id_level_metrics,
+            'input_method': input_method,
+            'original_data': df
+        }
+        
+    except Exception as e:
+        st.error(f"Error processing data: {str(e)}")
+        return None
 
-# Results section
-if st.session_state.processed_data is not None:
-    st.header("📊 Results")
+# Main processing
+if st.sidebar.button("🔄 Process Data", type="primary"):
+    st.session_state.processed_data = process_data(data_file, input_method)
+
+# Display results if data is processed
+if st.session_state.processed_data:
+    data = st.session_state.processed_data
     
-    df = st.session_state.processed_data
+    # Tabs for different views
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Overview", "📝 Statement Level", "🏷️ ID Level", 
+        "📈 Visualizations", "💾 Export Data"
+    ])
     
-    # Statistics overview with better layout
-    metrics_container = st.container()
-    with metrics_container:
-        col1, col2, col3, col4, col5 = st.columns(5)
+    with tab1:
+        st.header("📊 Data Overview")
+        
+        # Show input method info
+        method_color = "🟢" if data['input_method'] == "Ground Truth Data" else "🟦"
+        st.info(f"{method_color} **Input Method**: {data['input_method']}")
+        
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Statements", len(df))
+            st.metric(
+                "Total Statements", 
+                len(data['statement_metrics']),
+                help="Total number of statements analyzed"
+            )
+        
         with col2:
-            total_matches = len(df[df['Binary Match'] == 1])
-            st.metric("Keyword Matches", total_matches)
+            personalized_count = len(data['statement_metrics'][data['statement_metrics']['Mode'] == 1])
+            st.metric(
+                "Personalized Statements", 
+                personalized_count,
+                delta=f"{personalized_count/len(data['statement_metrics'])*100:.1f}%"
+            )
+        
         with col3:
-            avg_dict_pct = df['Dict Word %'].mean()
-            st.metric("Avg Dict Word %", f"{avg_dict_pct:.1f}%")
+            unique_ids = data['statement_metrics']['ID'].nunique()
+            st.metric(
+                "Unique Posts", 
+                unique_ids,
+                help="Number of unique Instagram posts"
+            )
+        
         with col4:
-            avg_llm_score = df['LLM Score'].mean()
-            st.metric("Avg LLM Score", f"{avg_llm_score:.1f}")
-        with col5:
-            unique_posts = df['Post ID'].nunique()
-            st.metric("Unique Posts", unique_posts)
-    
-    # Data table with enhanced filtering
-    st.subheader("📋 Results Data")
-    
-    # Advanced filtering options
-    filter_col1, filter_col2 = st.columns(2)
-    with filter_col1:
-        filter_text = st.text_input("🔍 Search all columns:", key="filter_input")
-    with filter_col2:
-        match_filter = st.selectbox("Filter by matches:", ["All", "Matches Only", "No Matches"])
-    
-    # Apply filters
-    filtered_df = df.copy()
-    
-    if filter_text:
-        mask = df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False, na=False)).any(axis=1)
-        filtered_df = filtered_df[mask]
-    
-    if match_filter == "Matches Only":
-        filtered_df = filtered_df[filtered_df['Binary Match'] == 1]
-    elif match_filter == "No Matches":
-        filtered_df = filtered_df[filtered_df['Binary Match'] == 0]
-    
-    # Display table with pagination
-    st.write(f"Showing {len(filtered_df)} of {len(df)} rows")
-    
-    # Use column configuration for better display
-    column_config = {
-        "Statement": st.column_config.TextColumn(
-            "Statement",
-            width="large",
-            help="Original text statement"
-        ),
-        "Binary Match": st.column_config.NumberColumn(
-            "Binary Match",
-            format="%d",
-            help="1 if contains keywords, 0 otherwise"
-        ),
-        "Dict Word %": st.column_config.NumberColumn(
-            "Dict Word %",
-            format="%.2f%%",
-            help="Percentage of words matching keywords"
-        ),
-        "Post Match %": st.column_config.NumberColumn(
-            "Post Match %",
-            format="%.2f%%",
-            help="Percentage of statements in post with matches"
-        ),
-        "LLM Score": st.column_config.NumberColumn(
-            "LLM Score",
-            format="%.2f",
-            help="Mock AI confidence score (1-5)"
-        )
-    }
-    
-    st.dataframe(
-        filtered_df,
-        use_container_width=True,
-        height=400,
-        column_config=column_config
-    )
-    
-    # Download options with better organization
-    download_col1, download_col2, download_col3 = st.columns(3)
-    
-    with download_col1:
-        csv_data = df.to_csv(index=False)
-        st.download_button(
-            label="💾 Download CSV",
-            data=csv_data,
-            file_name=f"classifier_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    with download_col2:
-        excel_data = df.to_csv(index=False, sep='\t')
-        st.download_button(
-            label="📋 Download TSV (Excel)",
-            data=excel_data,
-            file_name=f"classifier_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.tsv",
-            mime="text/tab-separated-values",
-            use_container_width=True
-        )
-    
-    with download_col3:
-        json_data = df.to_json(orient='records', indent=2)
-        st.download_button(
-            label="📄 Download JSON",
-            data=json_data,
-            file_name=f"classifier_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json",
-            use_container_width=True
-        )
-    
-    # Visualizations with better performance
-    st.subheader("📊 Visualizations")
-    
-    viz_col1, viz_col2 = st.columns(2)
-    
-    with viz_col1:
-        # Histogram with cached data
-        dict_word_pcts = df['Dict Word %'].tolist()
-        bin_labels, bin_counts = create_histogram_data(dict_word_pcts)
+            avg_strength = data['statement_metrics']['personalization_strength'].mean()
+            st.metric(
+                "Avg Personalization Strength", 
+                f"{avg_strength:.3f}",
+                help="Average continuous personalization score"
+            )
         
-        fig_hist = px.bar(
-            x=bin_labels,
-            y=bin_counts,
-            title="Distribution of Dictionary Word Percentage",
-            labels={'x': 'Dictionary Word Percentage', 'y': 'Number of Statements'},
-            color_discrete_sequence=['#ff69b4']
-        )
-        fig_hist.update_layout(showlegend=False)
-        st.plotly_chart(fig_hist, use_container_width=True)
+        # Distribution charts
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig = px.histogram(
+                data['statement_metrics'], 
+                x='personalization_strength',
+                title="Distribution of Personalization Strength",
+                nbins=20,
+                color_discrete_sequence=['#1f77b4']
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            sentiment_counts = data['statement_metrics']['sentiment_category'].value_counts()
+            fig = px.pie(
+                values=sentiment_counts.values,
+                names=sentiment_counts.index,
+                title="Sentiment Distribution"
+            )
+            st.plotly_chart(fig, use_container_width=True)
     
-    with viz_col2:
-        # Classifier Strength Analysis with cached calculations
-        st.subheader("🎯 Classifier Strength")
+    with tab2:
+        st.header("📝 Statement-Level Analysis")
         
-        processed_data_dict = df.to_dict('records')
-        avg_statement_rate, avg_word_rate = calculate_classifier_strength(processed_data_dict)
+        # Filters
+        col1, col2, col3 = st.columns(3)
         
-        def get_strength_label(rate):
-            if rate >= 50:
-                return "High", "#38a169"
-            elif rate >= 20:
-                return "Medium", "#ed8936"
-            else:
-                return "Low", "#e53e3e"
+        with col1:
+            min_strength = st.slider(
+                "Min Personalization Strength",
+                0.0, 1.0, 0.0, 0.1,
+                help="Filter statements by minimum personalization strength"
+            )
         
-        statement_strength, statement_color = get_strength_label(avg_statement_rate)
-        word_strength, word_color = get_strength_label(avg_word_rate)
+        with col2:
+            sentiment_filter = st.selectbox(
+                "Sentiment Filter",
+                ['All', 'positive', 'negative', 'neutral'],
+                help="Filter by sentiment category"
+            )
         
-        # Use metrics for better display
-        st.metric(
-            label="Statement-Level Rate",
-            value=f"{avg_statement_rate:.1f}%",
-            help="Percentage of statements classified as positive per post"
+        with col3:
+            show_keywords = st.checkbox("Show Keywords", True)
+        
+        # Apply filters
+        filtered_statements = data['statement_metrics'][
+            data['statement_metrics']['personalization_strength'] >= min_strength
+        ]
+        
+        if sentiment_filter != 'All':
+            filtered_statements = filtered_statements[
+                filtered_statements['sentiment_category'] == sentiment_filter
+            ]
+        
+        # Display filtered results
+        st.subheader(f"Filtered Statements ({len(filtered_statements)} results)")
+        
+        display_columns = [
+            'ID', 'Turn', 'Statement', 'Mode', 'personalization_strength',
+            'sentiment_polarity', 'sentiment_category', 'word_count'
+        ]
+        
+        if show_keywords:
+            display_columns.append('personalized_keywords')
+        
+        st.dataframe(
+            filtered_statements[display_columns],
+            use_container_width=True,
+            height=400
         )
-        st.markdown(f"<span style='color: {statement_color}; font-weight: bold;'>{statement_strength} Strength</span>", unsafe_allow_html=True)
         
-        st.metric(
-            label="Word-Level Rate", 
-            value=f"{avg_word_rate:.1f}%",
-            help="Percentage of classifier words out of total words per post"
+        # Top keywords
+        if show_keywords:
+            st.subheader("🔑 Most Common Personalization Keywords")
+            all_keywords = []
+            for keywords_list in filtered_statements['personalized_keywords']:
+                all_keywords.extend(keywords_list)
+            
+            if all_keywords:
+                keyword_counts = Counter(all_keywords)
+                top_keywords = keyword_counts.most_common(10)
+                
+                fig = px.bar(
+                    x=[kw[1] for kw in top_keywords],
+                    y=[kw[0] for kw in top_keywords],
+                    orientation='h',
+                    title="Top 10 Personalization Keywords",
+                    labels={'x': 'Frequency', 'y': 'Keywords'}
+                )
+                fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+                st.plotly_chart(fig, use_container_width=True)
+    
+    with tab3:
+        st.header("🏷️ ID-Level Aggregated Metrics")
+        
+        # Summary statistics
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📊 Continuous Measures Summary")
+            summary_stats = data['id_level_metrics'][
+                ['avg_personalization_strength', 'personalized_statement_percentage', 
+                 'personalized_word_percentage', 'avg_sentiment_polarity']
+            ].describe()
+            st.dataframe(summary_stats)
+        
+        with col2:
+            st.subheader("🎯 Binary vs Continuous Comparison")
+            binary_vs_continuous = pd.DataFrame({
+                'Metric': [
+                    'Posts with Personalized Content (Binary)',
+                    'Avg Personalization Strength (Continuous)',
+                    'Avg Statement Percentage (Continuous)', 
+                    'Avg Word Percentage (Continuous)'
+                ],
+                'Value': [
+                    f"{data['id_level_metrics']['has_personalized_content'].sum()} / {len(data['id_level_metrics'])}",
+                    f"{data['id_level_metrics']['avg_personalization_strength'].mean():.3f}",
+                    f"{data['id_level_metrics']['personalized_statement_percentage'].mean():.1f}%",
+                    f"{data['id_level_metrics']['personalized_word_percentage'].mean():.1f}%"
+                ]
+            })
+            st.dataframe(binary_vs_continuous, hide_index=True)
+        
+        # Display ID-level data
+        st.subheader("📋 ID-Level Data")
+        
+        display_cols = [
+            'ID', 'total_statements', 'personalized_statements_count',
+            'personalized_statement_percentage', 'personalized_word_percentage',
+            'avg_personalization_strength', 'avg_sentiment_polarity',
+            'has_personalized_content'
+        ]
+        
+        st.dataframe(
+            data['id_level_metrics'][display_cols],
+            use_container_width=True,
+            height=400
         )
-        st.markdown(f"<span style='color: {word_color}; font-weight: bold;'>{word_strength} Strength</span>", unsafe_allow_html=True)
+    
+    with tab4:
+        st.header("📈 Advanced Visualizations")
         
-        # Interpretation guide
-        with st.expander("💡 Strength Interpretation"):
-            st.write("**High (>50%):** Strong classifier presence")
-            st.write("**Medium (20-50%):** Moderate classifier presence")
-            st.write("**Low (<20%):** Weak classifier presence")
+        # Correlation matrix
+        st.subheader("🔗 Correlation Analysis")
+        
+        numeric_cols = [
+            'personalized_statements_count', 'total_statements', 'total_words',
+            'personalized_keywords_count', 'avg_personalization_strength',
+            'personalized_statement_percentage', 'personalized_word_percentage',
+            'avg_sentiment_polarity'
+        ]
+        
+        corr_matrix = data['id_level_metrics'][numeric_cols].corr()
+        
+        fig = px.imshow(
+            corr_matrix,
+            title="Correlation Matrix of Continuous Measures",
+            color_continuous_scale='RdBu_r',
+            aspect='auto'
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Scatter plots
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig = px.scatter(
+                data['id_level_metrics'],
+                x='personalized_statement_percentage',
+                y='avg_personalization_strength',
+                title='Statement % vs Avg Strength',
+                trendline='ols'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            fig = px.scatter(
+                data['id_level_metrics'],
+                x='personalized_word_percentage',
+                y='avg_sentiment_polarity',
+                title='Word % vs Sentiment',
+                trendline='ols'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Distribution comparisons
+        st.subheader("📊 Distribution Comparisons")
+        
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=[
+                'Personalization Strength Distribution',
+                'Statement Percentage Distribution',
+                'Word Percentage Distribution',
+                'Sentiment Distribution'
+            ]
+        )
+        
+        # Add histograms
+        fig.add_trace(
+            go.Histogram(
+                x=data['id_level_metrics']['avg_personalization_strength'],
+                name='Strength'
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Histogram(
+                x=data['id_level_metrics']['personalized_statement_percentage'],
+                name='Statement %'
+            ),
+            row=1, col=2
+        )
+        
+        fig.add_trace(
+            go.Histogram(
+                x=data['id_level_metrics']['personalized_word_percentage'],
+                name='Word %'
+            ),
+            row=2, col=1
+        )
+        
+        fig.add_trace(
+            go.Histogram(
+                x=data['id_level_metrics']['avg_sentiment_polarity'],
+                name='Sentiment'
+            ),
+            row=2, col=2
+        )
+        
+        fig.update_layout(height=600, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with tab5:
+        st.header("💾 Export Processed Data")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📤 Generated Outputs")
+            
+            outputs_info = [
+                {
+                    "name": "📊 ID-Level Aggregated Metrics",
+                    "rows": len(data['id_level_metrics']),
+                    "cols": len(data['id_level_metrics'].columns),
+                    "description": "Post-level continuous measures"
+                },
+                {
+                    "name": "📝 Statement-Level Word Metrics", 
+                    "rows": len(data['statement_metrics']),
+                    "cols": len(data['statement_metrics'].columns),
+                    "description": "Statement-level analysis"
+                },
+                {
+                    "name": "🔍 Enhanced Ground Truth",
+                    "rows": len(data['ground_truth']),
+                    "cols": len(data['ground_truth'].columns), 
+                    "description": "Enriched original data"
+                }
+            ]
+            
+            for output in outputs_info:
+                st.write(f"**{output['name']}**")
+                st.write(f"• {output['rows']} rows, {output['cols']} columns")
+                st.write(f"• {output['description']}")
+                st.write("")
+        
+        with col2:
+            st.subheader("⬇️ Download Generated Outputs")
+            
+            # Primary outputs to generate
+            output_datasets = {
+                "📊 ID-Level Aggregated Metrics": {
+                    "data": data['id_level_metrics'],
+                    "filename": "id_level_aggregated_metrics.csv",
+                    "description": "Post-level continuous measures and percentages"
+                },
+                "📝 Statement-Level Word Metrics": {
+                    "data": data['statement_metrics'],
+                    "filename": "statement_level_word_metrics.csv", 
+                    "description": "Statement-level analysis with continuous scores"
+                },
+                "🔍 Enhanced Ground Truth": {
+                    "data": data['ground_truth'],
+                    "filename": "enhanced_ground_truth_with_metrics.csv",
+                    "description": "Original data enriched with continuous measures"
+                }
+            }
+            
+            # Add original data if it was IG posts
+            if data['input_method'] == "IG Posts Data":
+                output_datasets["📱 Original IG Posts Data"] = {
+                    "data": data['original_data'],
+                    "filename": "original_ig_posts_data.csv",
+                    "description": "Your original IG posts input data"
+                }
+            
+            for name, info in output_datasets.items():
+                with st.expander(f"{name} ({len(info['data'])} rows)"):
+                    st.write(info['description'])
+                    st.write(f"**Columns**: {', '.join(info['data'].columns[:8])}{'...' if len(info['data'].columns) > 8 else ''}")
+                    
+                    csv_data = info['data'].to_csv(index=False)
+                    st.download_button(
+                        label=f"📥 Download {name}",
+                        data=csv_data,
+                        file_name=info['filename'],
+                        mime='text/csv',
+                        use_container_width=True
+                    )
+        
+        # Summary report
+        st.subheader("📋 Analysis Summary")
+        
+        summary_report = f"""
+        ## Classifier Transformation Summary
+        
+        ### Binary to Continuous Conversion Results:
+        
+        **1. Personalization Strength Score**
+        - Range: 0.0 to 1.0
+        - Average: {data['id_level_metrics']['avg_personalization_strength'].mean():.3f}
+        - Based on: Binary classification + keyword density
+        
+        **2. Statement-Level Percentage**
+        - Average: {data['id_level_metrics']['personalized_statement_percentage'].mean():.1f}%
+        - Range: {data['id_level_metrics']['personalized_statement_percentage'].min():.1f}% to {data['id_level_metrics']['personalized_statement_percentage'].max():.1f}%
+        - Measures: Personalized statements / Total statements per post
+        
+        **3. Word-Level Percentage** 
+        - Average: {data['id_level_metrics']['personalized_word_percentage'].mean():.1f}%
+        - Range: {data['id_level_metrics']['personalized_word_percentage'].min():.1f}% to {data['id_level_metrics']['personalized_word_percentage'].max():.1f}%
+        - Measures: Personalized keywords / Total words per post
+        
+        ### Dataset Statistics:
+        - Total Statements Analyzed: {len(data['statement_metrics'])}
+        - Unique Posts: {data['statement_metrics']['ID'].nunique()}
+        - Personalized Statements: {len(data['statement_metrics'][data['statement_metrics']['Mode'] == 1])}
+        - Posts with Personalized Content: {data['id_level_metrics']['has_personalized_content'].sum()}
+        """
+        
+        st.markdown(summary_report)
 
-# Footer with performance info
+else:
+    # Instructions when no data is loaded
+    st.info("👆 Upload your data files using the sidebar to get started!")
+    
+    st.markdown("""
+    ## 🚀 How to Use This Tool
+    
+    ### 1. **Choose Your Input Method**
+    - **Ground Truth Data**: Upload CSV with ID, Turn, Statement, Mode columns
+    - **IG Posts Data**: Upload Instagram posts data (auto-classifies personalization)
+    
+    ### 2. **Generated Outputs**
+    The tool will create these files for you:
+    - **📊 id_level_aggregated_metrics.csv**: Post-level continuous measures
+    - **📝 statement_level_word_metrics.csv**: Statement-level analysis with scores
+    - **🔍 Enhanced ground truth**: Original data enriched with new metrics
+    
+    ### 3. **File Encoding Support**
+    ✅ **UTF-8** (preferred)  
+    ✅ **Latin-1** (Western European)  
+    ✅ **ISO-8859-1** (Extended ASCII)  
+    ✅ **CP1252** (Windows-1252)  
+    
+    The tool automatically detects and handles different file encodings!
+    
+    ### 4. **Continuous Measures Generated**
+    - **Personalization Strength**: 0-1 score combining binary classification + keyword density
+    - **Statement Percentage**: % of personalized statements per post
+    - **Word Percentage**: % of personalized words per post
+    
+    ### 5. **Analysis Features**
+    - **Statement-level analysis** with keyword extraction
+    - **ID-level aggregation** with multiple continuous metrics
+    - **Sentiment analysis** integration
+    - **Interactive visualizations** and correlations
+    - **Export capabilities** for processed data
+    
+    ### 6. **Key Benefits**
+    ✅ Transform binary (0/1) classifications into nuanced continuous measures  
+    ✅ Handle multiple file encodings automatically  
+    ✅ Process either ground truth data OR raw IG posts  
+    ✅ Auto-classify IG posts using personalization keywords  
+    ✅ Analyze personalization at both statement and post levels  
+    ✅ Export enhanced datasets for further analysis  
+    """)
+
+# Footer
 st.markdown("---")
-footer_col1, footer_col2, footer_col3 = st.columns(3)
-
-with footer_col1:
-    st.markdown("Built with ❤️ using Streamlit")
-
-with footer_col2:
-    if st.session_state.processed_data is not None:
-        cache_info = st.cache_data.get_stats()
-        st.write(f"Cache hits: {len(cache_info)}")
-
-with footer_col3:
-    if st.button("🔄 Refresh App"):
-        st.experimental_rerun()
+st.markdown("**📊 Classifier Word Metrics Tool** - Transform binary classifications into continuous measures")
