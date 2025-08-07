@@ -30,18 +30,11 @@ ground_truth_file = st.sidebar.file_uploader(
     help="Upload the personalized_service_products_human_classification_ground_truth.csv file"
 )
 
-aggregated_file = st.sidebar.file_uploader(
-    "Upload Aggregated Metrics", 
-    type=['csv'], 
-    key="aggregated",
-    help="Upload the id_level_aggregated_metrics.csv file"
-)
-
 ig_posts_file = st.sidebar.file_uploader(
-    "Upload IG Posts Data", 
+    "Upload IG Posts Data (Optional)", 
     type=['csv'], 
     key="ig_posts",
-    help="Upload the ig_posts_shi_new.csv file"
+    help="Upload the ig_posts_shi_new.csv file for additional context"
 )
 
 # Initialize session state for processed data
@@ -120,15 +113,14 @@ def analyze_sentiment(text):
 
 def process_data():
     """Main data processing function"""
-    if not all([ground_truth_file, aggregated_file]):
-        st.warning("Please upload both Ground Truth and Aggregated Metrics files to proceed.")
+    if not ground_truth_file:
+        st.warning("Please upload the Ground Truth data file to proceed.")
         return None
     
     try:
         # Load data
-        with st.spinner("Loading data files..."):
+        with st.spinner("Loading ground truth data..."):
             ground_truth_df = pd.read_csv(ground_truth_file)
-            aggregated_df = pd.read_csv(aggregated_file)
             ig_posts_df = pd.read_csv(ig_posts_file) if ig_posts_file else None
         
         # Process ground truth data
@@ -198,7 +190,6 @@ def process_data():
             'ground_truth': ground_truth_df,
             'statement_metrics': statement_metrics,
             'id_level_metrics': id_level_metrics,
-            'aggregated_original': aggregated_df,
             'ig_posts': ig_posts_df
         }
         
@@ -498,28 +489,70 @@ if st.session_state.processed_data:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📄 Available Datasets")
+            st.subheader("📤 Generated Outputs")
             
-            datasets = {
-                "Statement-Level Metrics": data['statement_metrics'],
-                "ID-Level Aggregated Metrics": data['id_level_metrics'],
-                "Original Ground Truth (Enhanced)": data['ground_truth']
-            }
+            outputs_info = [
+                {
+                    "name": "📊 ID-Level Aggregated Metrics",
+                    "rows": len(data['id_level_metrics']),
+                    "cols": len(data['id_level_metrics'].columns),
+                    "description": "Post-level continuous measures"
+                },
+                {
+                    "name": "📝 Statement-Level Word Metrics", 
+                    "rows": len(data['statement_metrics']),
+                    "cols": len(data['statement_metrics'].columns),
+                    "description": "Statement-level analysis"
+                },
+                {
+                    "name": "🔍 Enhanced Ground Truth",
+                    "rows": len(data['ground_truth']),
+                    "cols": len(data['ground_truth'].columns), 
+                    "description": "Enriched original data"
+                }
+            ]
             
-            for name, df in datasets.items():
-                st.write(f"**{name}**: {len(df)} rows, {len(df.columns)} columns")
+            for output in outputs_info:
+                st.write(f"**{output['name']}**")
+                st.write(f"• {output['rows']} rows, {output['cols']} columns")
+                st.write(f"• {output['description']}")
+                st.write("")
         
         with col2:
-            st.subheader("⬇️ Download Options")
+            st.subheader("⬇️ Download Generated Outputs")
             
-            for name, df in datasets.items():
-                csv_data = df.to_csv(index=False)
-                st.download_button(
-                    label=f"Download {name}",
-                    data=csv_data,
-                    file_name=f"{name.lower().replace(' ', '_').replace('(', '').replace(')', '')}.csv",
-                    mime='text/csv'
-                )
+            # Primary outputs to generate
+            output_datasets = {
+                "📊 ID-Level Aggregated Metrics": {
+                    "data": data['id_level_metrics'],
+                    "filename": "id_level_aggregated_metrics.csv",
+                    "description": "Post-level continuous measures and percentages"
+                },
+                "📝 Statement-Level Word Metrics": {
+                    "data": data['statement_metrics'],
+                    "filename": "statement_level_word_metrics.csv", 
+                    "description": "Statement-level analysis with continuous scores"
+                },
+                "🔍 Enhanced Ground Truth": {
+                    "data": data['ground_truth'],
+                    "filename": "enhanced_ground_truth_with_metrics.csv",
+                    "description": "Original data enriched with continuous measures"
+                }
+            }
+            
+            for name, info in output_datasets.items():
+                with st.expander(f"{name} ({len(info['data'])} rows)"):
+                    st.write(info['description'])
+                    st.write(f"**Columns**: {', '.join(info['data'].columns[:8])}{'...' if len(info['data'].columns) > 8 else ''}")
+                    
+                    csv_data = info['data'].to_csv(index=False)
+                    st.download_button(
+                        label=f"📥 Download {name}",
+                        data=csv_data,
+                        file_name=info['filename'],
+                        mime='text/csv',
+                        use_container_width=True
+                    )
         
         # Summary report
         st.subheader("📋 Analysis Summary")
@@ -560,24 +593,29 @@ else:
     st.markdown("""
     ## 🚀 How to Use This Tool
     
-    ### 1. **Upload Required Files**
+    ### 1. **Upload Required File**
     - **Ground Truth Data**: Contains statements and binary classifications
-    - **Aggregated Metrics**: Contains ID-level summary statistics  
-    - **IG Posts Data** (optional): Original Instagram post data
+    - **IG Posts Data** (optional): Original Instagram post data for additional context
     
-    ### 2. **Continuous Measures Generated**
+    ### 2. **Generated Outputs**
+    The tool will create these files for you:
+    - **📊 id_level_aggregated_metrics.csv**: Post-level continuous measures
+    - **📝 statement_level_word_metrics.csv**: Statement-level analysis with scores
+    - **🔍 Enhanced ground truth**: Original data enriched with new metrics
+    
+    ### 3. **Continuous Measures Generated**
     - **Personalization Strength**: 0-1 score combining binary classification + keyword density
     - **Statement Percentage**: % of personalized statements per post
     - **Word Percentage**: % of personalized words per post
     
-    ### 3. **Analysis Features**
+    ### 4. **Analysis Features**
     - **Statement-level analysis** with keyword extraction
     - **ID-level aggregation** with multiple continuous metrics
     - **Sentiment analysis** integration
     - **Interactive visualizations** and correlations
     - **Export capabilities** for processed data
     
-    ### 4. **Key Benefits**
+    ### 5. **Key Benefits**
     ✅ Transform binary (0/1) classifications into nuanced continuous measures  
     ✅ Analyze personalization at both statement and post levels  
     ✅ Extract and analyze personalization keywords automatically  
