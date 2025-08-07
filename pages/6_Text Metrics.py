@@ -22,26 +22,125 @@ st.markdown("Convert binary classification to continuous measures with word-leve
 # Sidebar for file uploads
 st.sidebar.header("📂 Data Upload")
 
-# File uploaders
-ground_truth_file = st.sidebar.file_uploader(
-    "Upload Ground Truth Data", 
-    type=['csv'], 
-    key="ground_truth",
-    help="Upload the personalized_service_products_human_classification_ground_truth.csv file"
+# Input method selection
+input_method = st.sidebar.radio(
+    "📂 Choose Input Method:",
+    ["Ground Truth Data", "IG Posts Data"],
+    help="Select your data source type"
 )
 
-ig_posts_file = st.sidebar.file_uploader(
-    "Upload IG Posts Data (Optional)", 
-    type=['csv'], 
-    key="ig_posts",
-    help="Upload the ig_posts_shi_new.csv file for additional context"
-)
+if input_method == "Ground Truth Data":
+    data_file = st.sidebar.file_uploader(
+        "Upload Ground Truth CSV", 
+        type=['csv'], 
+        key="ground_truth",
+        help="Upload CSV with columns: ID, Turn, Statement, Mode (binary 0/1)"
+    )
+    st.sidebar.info("✅ Expected columns: ID, Turn, Statement, Mode")
+    
+else:  # IG Posts Data
+    data_file = st.sidebar.file_uploader(
+        "Upload IG Posts CSV", 
+        type=['csv'], 
+        key="ig_posts", 
+        help="Upload Instagram posts data with text content and engagement metrics"
+    )
+    st.sidebar.info("ℹ️ Will process post content and generate classifications")
 
 # Initialize session state for processed data
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = None
 
-def preprocess_text(text):
+def safe_read_csv(file, encodings=['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']):
+    """
+    Safely read CSV file with multiple encoding attempts
+    """
+    for encoding in encodings:
+        try:
+            # Reset file pointer
+            file.seek(0)
+            df = pd.read_csv(file, encoding=encoding)
+            st.success(f"✅ File loaded successfully with {encoding} encoding")
+            return df
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            st.error(f"Error with {encoding}: {str(e)}")
+            continue
+    
+    # If all encodings fail
+    st.error("❌ Could not read file with any supported encoding. Please check your file format.")
+    return None
+
+def detect_ig_posts_structure(df):
+    """
+    Detect and adapt IG posts data structure
+    """
+    # Common column name variations for IG posts
+    text_columns = ['caption', 'text', 'content', 'post_text', 'description', 'message']
+    id_columns = ['id', 'post_id', 'ig_id', 'shortcode', 'post_shortcode']
+    
+    # Find text column
+    text_col = None
+    for col in df.columns:
+        if col.lower() in text_columns or 'text' in col.lower() or 'caption' in col.lower():
+            text_col = col
+            break
+    
+    # Find ID column  
+    id_col = None
+    for col in df.columns:
+        if col.lower() in id_columns or 'id' in col.lower():
+            id_col = col
+            break
+    
+    if not text_col:
+        st.error("❌ Could not find text/caption column in IG posts data")
+        st.write("Available columns:", list(df.columns))
+        return None, None
+        
+    if not id_col:
+        st.warning("⚠️ Could not find ID column, will generate sequential IDs")
+        
+    return text_col, id_col
+
+def convert_ig_posts_to_ground_truth(df, text_col, id_col=None):
+    """
+    Convert IG posts data to ground truth format
+    """
+    processed_rows = []
+    
+    for idx, row in df.iterrows():
+        # Get post ID
+        post_id = row[id_col] if id_col else f"post_{idx:04d}"
+        
+        # Get text content
+        text_content = row[text_col] if pd.notna(row[text_col]) else ""
+        
+        # Split text into sentences/statements
+        sentences = re.split(r'[.!?]+', str(text_content))
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        # If no sentences found, use the whole text as one statement
+        if not sentences:
+            sentences = [str(text_content)]
+        
+        # Create statements with auto-classification
+        for turn, statement in enumerate(sentences, 1):
+            if statement.strip():
+                # Auto-classify based on personalization keywords
+                keywords = extract_personalized_keywords(statement)
+                mode = 1 if keywords else 0
+                
+                processed_rows.append({
+                    'ID': str(post_id),
+                    'Turn': turn,
+                    'Statement': statement.strip(),
+                    'Mode': mode,
+                    'auto_classified': True
+                })
+    
+    return pd.DataFrame(processed_rows)
     """Clean and preprocess text"""
     if pd.isna(text) or text == "":
         return ""
