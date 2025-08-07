@@ -2,3 +2,8 @@ streamlit
 pandas
 nltk
 chardet
+numpy
+plotl
+openpyxl
+xlsxwriter
+watchdog
