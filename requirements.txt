@@ -3,20 +3,24 @@ pandas
 nltk
 chardet
 # Core dependencies
-streamlit>=1.28.0
 numpy>=1.24.0
 plotly>=5.15.0
 
-# Optional: For better Excel/CSV handling
+# File handling and encoding
 openpyxl>=3.1.0
 xlsxwriter>=3.1.0
 chardet>=5.0.0
 
-# Optional: For deployment and development
+# Optional: Development and deployment
 watchdog>=3.0.0
 python-dotenv>=1.0.0
 
-# Development dependencies (optional)
+# Optional: Enhanced data processing
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# Development dependencies (uncomment if needed)
 # pytest>=7.0.0
 # black>=23.0.0
 # flake8>=6.0.0
+# mypy>=1.0.0
