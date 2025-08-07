@@ -1,4 +1,126 @@
-import streamlit as st
+if st.session_state.keywords:
+            st.subheader("🔤 Keywords")
+            st.write(f"**Count:** {len(st.session_state.keywords)}")
+            st.write(f"**Sample:** {', '.join(st.session_state.keywords[:5])}...")
+            
+        if st.session_state.classifiers:
+            st.subheader("🎯 Classifiers")
+            st.write(f"**Count:** {len(st.session_state.classifiers)}")
+            st.write(f"**Expected columns:** {', '.join([f'has_{c.lower()}' for c in st.session_state.classifiers])}")
+    
+    # Debug output
+    if debug_mode and st.session_state.debug_output:
+        st.subheader("🔍 Debug Information")
+        st.code(st.session_state.debug_output, language="text")
+    
+    # Results section
+    if st.session_state.statement_metrics is not None:
+        st.header("📊 Results")
+        
+        # Metrics selection tabs
+        tab1, tab2 = st.tabs(["📋 Statement-Level Metrics", "📊 ID-Level Aggregated Metrics"])
+        
+        with tab1:
+            df = st.session_state.statement_metrics
+            
+            # Statistics overview for statement-level
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                st.metric(
+                    label="Total Statements",
+                    value=f"{len(df):,}",
+                    delta=None
+                )
+            
+            with col2:
+                if 'Binary Match' in df.columns:
+                    total_matches = len(df[df['Binary Match'] == 1])
+                    match_rate = (total_matches / len(df) * 100) if len(df) > 0 else 0
+                    st.metric(
+                        label="Keyword Matches",
+                        value=f"{total_matches:,}",
+                        delta=f"{match_rate:.1f}%"
+                    )
+                else:
+                    st.metric(label="Keyword Matches", value="N/A")
+            
+            with col3:
+                if 'Dict Word %' in df.columns:
+                    avg_dict_pct = df['Dict Word %'].mean()
+                    st.metric(
+                        label="Avg Dict Word %",
+                        value=f"{avg_dict_pct:.1f}%",
+                        delta=None
+                    )
+                else:
+                    st.metric(label="Avg Dict Word %", value="N/A")
+            
+            with col4:
+                if 'LLM Score' in df.columns:
+                    avg_llm_score = df['LLM Score'].mean()
+                    st.metric(
+                        label="Avg LLM Score",
+                        value=f"{avg_llm_score:.1f}",
+                        delta=None
+                    )
+                else:
+                    st.metric(label="Avg LLM Score", value="N/A")
+            
+            with col5:
+                unique_posts = df['Post ID'].nunique()
+                st.metric(
+                    label="Unique Posts",
+                    value=f"{unique_posts:,}",
+                    delta=None
+                )
+            
+            # Data table with filtering
+            st.subheader("📋 Statement-Level Data")
+            
+            # Filter controls
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                filter_text = st.text_input("🔍 Filter results (search any column):", key="filter_input_stmt")
+            with col2:
+                if 'Binary Match' in df.columns:
+                    show_matches_only = st.checkbox("Show keyword matches only", key="matches_filter_stmt")
+                else:
+                    show_matches_only = False
+            
+            # Apply filters
+            filtered_df = df.copy()
+            
+            if filter_text:
+                mask = filtered_df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False, na=False)).any(axis=1)
+                filtered_df = filtered_df[mask]
+            
+            if show_matches_only and 'Binary Match' in df.columns:
+                filtered_df = filtered_df[filtered_df['Binary Match'] == 1]
+            
+            # Display table
+            st.dataframe(
+                filtered_df,
+                use_container_width=True,
+                height=400
+            )
+            
+            st.write(f"Showing {len(filtered_df):,} of {len(df):,} rows")
+            
+            # Download options for statement-level
+            col1, col2 = st.columns(2)
+            with col1:
+                csv_data = df.to_csv(index=False)
+                st.download_button(
+                    label="💾 Download Statement-Level CSV",
+                    data=csv_data,
+                    file_name=f"statement_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                excel_data =import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -70,9 +192,12 @@ def init_session_state():
         'processed_data': None,
         'csv_data': None,
         'keywords': [],
+        'classifiers': [],
         'file_uploader_key': 0,
         'processing_complete': False,
-        'debug_output': ""
+        'debug_output': "",
+        'statement_metrics': None,
+        'id_metrics': None
     }
     
     for key, value in defaults.items():
@@ -191,13 +316,13 @@ def find_flexible_column(df_columns, possible_names):
     return None
 
 @st.cache_data  
-def process_data(csv_data_dict, keywords_list, debug_mode=False):
-    """Process the data with keyword matching - cached for performance"""
+def process_data(csv_data_dict, keywords_list, classifiers_list, debug_mode=False):
+    """Process the data with keyword matching and classifier analysis - cached for performance"""
     # Convert back from dict to DataFrame for caching compatibility
     csv_data = pd.DataFrame(csv_data_dict)
     
-    if csv_data.empty or len(keywords_list) == 0:
-        return None, "No data or keywords provided"
+    if csv_data.empty or (len(keywords_list) == 0 and len(classifiers_list) == 0):
+        return None, None, None, "No data or keywords/classifiers provided"
     
     debug_output = ""
     
@@ -208,10 +333,23 @@ def process_data(csv_data_dict, keywords_list, debug_mode=False):
     
     if not statement_col or not post_id_col:
         available_cols = list(csv_data.columns)
-        return None, f"Required columns not found. Available columns: {available_cols}"
+        return None, None, None, f"Required columns not found. Available columns: {available_cols}"
+    
+    # Find classifier columns
+    classifier_columns = {}
+    for classifier in classifiers_list:
+        expected_col = f"has_{classifier.lower()}"
+        found_col = find_flexible_column(csv_data.columns.tolist(), [expected_col])
+        if found_col:
+            classifier_columns[classifier] = found_col
+        else:
+            if debug_mode:
+                debug_output += f"⚠️ Column '{expected_col}' not found for classifier '{classifier}'\n"
     
     if debug_mode:
         debug_output += f"Keywords ({len(keywords_list)}): {', '.join(keywords_list)}\n"
+        debug_output += f"Classifiers ({len(classifiers_list)}): {', '.join(classifiers_list)}\n"
+        debug_output += f"Found classifier columns: {classifier_columns}\n"
         debug_output += f"CSV Data Rows: {len(csv_data)}\n"
         debug_output += f"Using columns - Statement: {statement_col}, Post ID: {post_id_col}\n\n"
     
@@ -228,7 +366,7 @@ def process_data(csv_data_dict, keywords_list, debug_mode=False):
                 debug_output += f"{i+1}. \"{row[statement_col]}\" (post_id: {row[post_id_col]})\n"
             debug_output += "\n"
     
-    # Calculate post-level statistics
+    # Calculate post-level statistics for keywords
     post_stats = {}
     total_processed = 0
     total_matches = 0
@@ -242,23 +380,25 @@ def process_data(csv_data_dict, keywords_list, debug_mode=False):
             post_stats[post_id] = {'total': 0, 'matches': 0}
         post_stats[post_id]['total'] += 1
         
-        # Check for keyword matches
-        statement_lower = statement.lower()
-        has_match = any(keyword.lower() in statement_lower for keyword in keywords_list)
-        
-        if has_match:
-            post_stats[post_id]['matches'] += 1
-            total_matches += 1
+        # Check for keyword matches (only if keywords provided)
+        if keywords_list:
+            statement_lower = statement.lower()
+            has_match = any(keyword.lower() in statement_lower for keyword in keywords_list)
             
-            if debug_mode and total_matches <= 5:
-                matching_keywords = [kw for kw in keywords_list if kw.lower() in statement_lower]
-                debug_output += f"✅ Match found: {matching_keywords} in \"{statement[:50]}...\"\n"
+            if has_match:
+                post_stats[post_id]['matches'] += 1
+                total_matches += 1
+                
+                if debug_mode and total_matches <= 5:
+                    matching_keywords = [kw for kw in keywords_list if kw.lower() in statement_lower]
+                    debug_output += f"✅ Match found: {matching_keywords} in \"{statement[:50]}...\"\n"
     
     if debug_mode:
         debug_output += f"\nFirst Pass Results:\n"
         debug_output += f"Total rows processed: {total_processed}\n"
-        debug_output += f"Total matches found: {total_matches}\n"
-        debug_output += f"Match rate: {(total_matches/total_processed*100):.1f}%\n\n"
+        debug_output += f"Total keyword matches found: {total_matches}\n"
+        if total_processed > 0:
+            debug_output += f"Keyword match rate: {(total_matches/total_processed*100):.1f}%\n\n"
     
     # Calculate post match percentages
     for post_id in post_stats:
@@ -276,47 +416,96 @@ def process_data(csv_data_dict, keywords_list, debug_mode=False):
         words = re.findall(r'\b\w+\b', statement_lower)
         word_count = row[word_count_col] if word_count_col and pd.notna(row[word_count_col]) else len(words)
         
-        # Binary classification
-        binary_match = 1 if any(keyword.lower() in statement_lower for keyword in keywords_list) else 0
-        
-        # Dictionary word percentage
-        matching_words = [word for word in words if any(
-            word == keyword.lower() or 
-            keyword.lower() in word or 
-            word in keyword.lower() 
-            for keyword in keywords_list
-        )]
-        
-        dict_word_pct = (len(matching_words) / len(words)) * 100 if words else 0
-        
-        # Post match percentage
-        post_match_pct = post_stats[post_id]['match_pct']
-        
-        # Mock LLM score (cached)
-        llm_score = rate_with_llm(statement)
-        
-        processed_rows.append({
+        # Initialize row data
+        row_data = {
             'Post ID': post_id,
             'Statement': statement,
-            'Binary Match': binary_match,
-            'Dict Word %': round(dict_word_pct, 2),
-            'Post Match %': round(post_match_pct, 2),
-            'LLM Score': round(llm_score, 2),
             'Word Count': int(word_count)
-        })
+        }
+        
+        # Keyword-based metrics (only if keywords provided)
+        if keywords_list:
+            # Binary classification
+            binary_match = 1 if any(keyword.lower() in statement_lower for keyword in keywords_list) else 0
+            
+            # Dictionary word percentage
+            matching_words = [word for word in words if any(
+                word == keyword.lower() or 
+                keyword.lower() in word or 
+                word in keyword.lower() 
+                for keyword in keywords_list
+            )]
+            
+            dict_word_pct = (len(matching_words) / len(words)) * 100 if words else 0
+            
+            # Post match percentage
+            post_match_pct = post_stats[post_id]['match_pct']
+            
+            # Mock LLM score (cached)
+            llm_score = rate_with_llm(statement)
+            
+            row_data.update({
+                'Binary Match': binary_match,
+                'Dict Word %': round(dict_word_pct, 2),
+                'Post Match %': round(post_match_pct, 2),
+                'LLM Score': round(llm_score, 2)
+            })
+        
+        # Add classifier columns
+        for classifier, col_name in classifier_columns.items():
+            classifier_value = row[col_name] if pd.notna(row[col_name]) else 0
+            # Convert to binary if needed
+            if classifier_value in [True, False]:
+                classifier_value = 1 if classifier_value else 0
+            elif isinstance(classifier_value, str):
+                classifier_value = 1 if classifier_value.lower() in ['true', '1', 'yes'] else 0
+            row_data[f'Has {classifier}'] = int(classifier_value)
+        
+        processed_rows.append(row_data)
+    
+    # Create statement-level DataFrame
+    statement_df = pd.DataFrame(processed_rows)
+    
+    # Create ID-level aggregated metrics
+    id_metrics = []
+    for post_id in statement_df['Post ID'].unique():
+        post_data = statement_df[statement_df['Post ID'] == post_id]
+        
+        id_row = {
+            'Post ID': post_id,
+            'Total Statements': len(post_data),
+            'Total Words': post_data['Word Count'].sum()
+        }
+        
+        # Keyword metrics (only if keywords provided)
+        if keywords_list:
+            id_row.update({
+                'Keyword Matches': post_data['Binary Match'].sum(),
+                'Keyword Match Rate %': (post_data['Binary Match'].sum() / len(post_data)) * 100,
+                'Avg Dict Word %': post_data['Dict Word %'].mean(),
+                'Avg LLM Score': post_data['LLM Score'].mean()
+            })
+        
+        # Classifier metrics
+        for classifier in classifiers_list:
+            if f'Has {classifier}' in post_data.columns:
+                classifier_col = f'Has {classifier}'
+                id_row[f'{classifier} Matches'] = post_data[classifier_col].sum()
+                id_row[f'{classifier} Match Rate %'] = (post_data[classifier_col].sum() / len(post_data)) * 100
+        
+        id_metrics.append(id_row)
+    
+    id_df = pd.DataFrame(id_metrics)
     
     if debug_mode:
-        binary_matches = sum(1 for row in processed_rows if row['Binary Match'] == 1)
+        binary_matches = statement_df['Binary Match'].sum() if 'Binary Match' in statement_df.columns else 0
         debug_output += f"Second Pass Results:\n"
-        debug_output += f"Binary matches: {binary_matches}/{len(processed_rows)}\n"
-        
-        non_zero_dict = [row for row in processed_rows if row['Dict Word %'] > 0]
-        debug_output += f"Non-zero dict_word_pct: {len(non_zero_dict)}\n"
-        if non_zero_dict:
-            avg_dict = sum(row['Dict Word %'] for row in non_zero_dict) / len(non_zero_dict)
-            debug_output += f"Average dict_word_pct (non-zero): {avg_dict:.2f}%\n"
+        debug_output += f"Statement-level rows: {len(statement_df)}\n"
+        debug_output += f"ID-level rows: {len(id_df)}\n"
+        if keywords_list:
+            debug_output += f"Binary matches: {binary_matches}/{len(statement_df)}\n"
     
-    return pd.DataFrame(processed_rows), debug_output
+    return statement_df, id_df, debug_output
 
 # Main app function
 def main():
@@ -373,7 +562,7 @@ def main():
         keywords_text = st.text_area(
             "Enter keywords (comma or line separated):",
             value=default_keywords,
-            height=150,
+            height=100,
             key="keywords_input"
         )
         
@@ -381,13 +570,38 @@ def main():
             manual_keywords = [kw.strip() for kw in re.split(r'[,\n\r]+', keywords_text) if kw.strip()]
             st.session_state.keywords = manual_keywords
         
+        # Classifier definition
+        st.subheader("🎯 Define Your Classifiers")
+        st.markdown("*Optional: Enter classifier names (comma-separated). The app will look for columns named `has_{classifier_name}` in your data.*")
+        
+        classifiers_text = st.text_area(
+            "Enter classifier names:",
+            placeholder="luxury, premium, affordable, sustainable",
+            height=80,
+            key="classifiers_input",
+            help="The app will search for columns like 'has_luxury', 'has_premium', etc."
+        )
+        
+        if classifiers_text:
+            classifiers = [cl.strip() for cl in re.split(r'[,\n\r]+', classifiers_text) if cl.strip()]
+            st.session_state.classifiers = classifiers
+        else:
+            st.session_state.classifiers = []
+        
         # Debug mode
         debug_mode = st.checkbox("Enable Debug Mode", help="Shows detailed matching information")
         
         # Clear data button
         if st.button("🗑️ Clear All Data", key="clear_data"):
-            for key in ['processed_data', 'csv_data', 'keywords', 'processing_complete', 'debug_output']:
-                st.session_state[key] = None if key in ['processed_data', 'csv_data'] else [] if key == 'keywords' else False if key == 'processing_complete' else ""
+            for key in ['processed_data', 'csv_data', 'keywords', 'classifiers', 'processing_complete', 'debug_output', 'statement_metrics', 'id_metrics']:
+                if key in ['processed_data', 'csv_data', 'statement_metrics', 'id_metrics']:
+                    st.session_state[key] = None
+                elif key in ['keywords', 'classifiers']:
+                    st.session_state[key] = []
+                elif key == 'processing_complete':
+                    st.session_state[key] = False
+                else:
+                    st.session_state[key] = ""
             st.session_state.file_uploader_key += 1
             st.rerun()
     
@@ -401,21 +615,24 @@ def main():
         if st.button("🚀 Process Data & Generate Metrics", type="primary", use_container_width=True):
             if st.session_state.csv_data is None:
                 st.error("Please upload and process CSV files first!")
-            elif not st.session_state.keywords:
-                st.error("Please enter keywords or upload a keyword file!")
+            elif not st.session_state.keywords and not st.session_state.classifiers:
+                st.error("Please enter keywords or define classifiers!")
             else:
                 with st.spinner("Processing your data..."):
                     # Convert DataFrame to dict for caching compatibility
                     csv_data_dict = st.session_state.csv_data.to_dict('records')
                     
-                    processed_data, debug_output = process_data(
+                    statement_data, id_data, debug_output = process_data(
                         csv_data_dict, 
-                        st.session_state.keywords, 
+                        st.session_state.keywords,
+                        st.session_state.classifiers,
                         debug_mode
                     )
                     
-                    if processed_data is not None:
-                        st.session_state.processed_data = processed_data
+                    if statement_data is not None:
+                        st.session_state.processed_data = statement_data  # For backward compatibility
+                        st.session_state.statement_metrics = statement_data
+                        st.session_state.id_metrics = id_data
                         st.session_state.debug_output = debug_output
                         st.session_state.processing_complete = True
                         st.success("✅ Data processed successfully!")
@@ -434,6 +651,11 @@ def main():
             st.subheader("🔤 Keywords")
             st.write(f"**Count:** {len(st.session_state.keywords)}")
             st.write(f"**Sample:** {', '.join(st.session_state.keywords[:5])}...")
+            
+        if st.session_state.classifiers:
+            st.subheader("🎯 Classifiers")
+            st.write(f"**Count:** {len(st.session_state.classifiers)}")
+            st.write(f"**Expected columns:** {', '.join([f'has_{c.lower()}' for c in st.session_state.classifiers])}")
     
     # Debug output
     if debug_mode and st.session_state.debug_output:
@@ -441,230 +663,336 @@ def main():
         st.code(st.session_state.debug_output, language="text")
     
     # Results section
-    if st.session_state.processed_data is not None:
+    if st.session_state.statement_metrics is not None:
         st.header("📊 Results")
         
-        df = st.session_state.processed_data
+        # Metrics selection tabs
+        tab1, tab2 = st.tabs(["📋 Statement-Level Metrics", "📊 ID-Level Aggregated Metrics"])
         
-        # Statistics overview
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric(
-                label="Total Statements",
-                value=f"{len(df):,}",
-                delta=None
-            )
-        
-        with col2:
-            total_matches = len(df[df['Binary Match'] == 1])
-            match_rate = (total_matches / len(df) * 100) if len(df) > 0 else 0
-            st.metric(
-                label="Keyword Matches",
-                value=f"{total_matches:,}",
-                delta=f"{match_rate:.1f}%"
-            )
-        
-        with col3:
-            avg_dict_pct = df['Dict Word %'].mean()
-            st.metric(
-                label="Avg Dict Word %",
-                value=f"{avg_dict_pct:.1f}%",
-                delta=None
-            )
-        
-        with col4:
-            avg_llm_score = df['LLM Score'].mean()
-            st.metric(
-                label="Avg LLM Score",
-                value=f"{avg_llm_score:.1f}",
-                delta=None
-            )
-        
-        with col5:
-            unique_posts = df['Post ID'].nunique()
-            st.metric(
-                label="Unique Posts",
-                value=f"{unique_posts:,}",
-                delta=None
-            )
-        
-        # Data table with filtering
-        st.subheader("📋 Results Data")
-        
-        # Filter controls
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            filter_text = st.text_input("🔍 Filter results (search any column):", key="filter_input")
-        with col2:
-            show_matches_only = st.checkbox("Show matches only", key="matches_filter")
-        
-        # Apply filters
-        filtered_df = df.copy()
-        
-        if filter_text:
-            mask = filtered_df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False, na=False)).any(axis=1)
-            filtered_df = filtered_df[mask]
-        
-        if show_matches_only:
-            filtered_df = filtered_df[filtered_df['Binary Match'] == 1]
-        
-        # Display table
-        st.dataframe(
-            filtered_df,
-            use_container_width=True,
-            height=400,
-            column_config={
-                "Statement": st.column_config.TextColumn(
-                    "Statement",
-                    width="large",
-                    help="The text statement being analyzed"
-                ),
-                "Binary Match": st.column_config.NumberColumn(
-                    "Binary Match",
-                    help="1 if keywords found, 0 if not",
-                    format="%d"
-                ),
-                "Dict Word %": st.column_config.NumberColumn(
-                    "Dict Word %",
-                    help="Percentage of words that match keywords",
-                    format="%.2f%%"
-                ),
-                "Post Match %": st.column_config.NumberColumn(
-                    "Post Match %",
-                    help="Percentage of statements in post that match",
-                    format="%.2f%%"
-                ),
-                "LLM Score": st.column_config.NumberColumn(
-                    "LLM Score",
-                    help="Mock AI confidence score (1-5)",
-                    format="%.2f"
+        with tab1:
+            df = st.session_state.statement_metrics
+            
+            # Statistics overview for statement-level
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                st.metric(
+                    label="Total Statements",
+                    value=f"{len(df):,}",
+                    delta=None
                 )
-            }
-        )
-        
-        st.write(f"Showing {len(filtered_df):,} of {len(df):,} rows")
-        
-        # Download options
-        col1, col2 = st.columns(2)
-        with col1:
-            csv_data = df.to_csv(index=False)
-            st.download_button(
-                label="💾 Download Complete Results CSV",
-                data=csv_data,
-                file_name=f"classifier_word_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True
+            
+            with col2:
+                if 'Binary Match' in df.columns:
+                    total_matches = len(df[df['Binary Match'] == 1])
+                    match_rate = (total_matches / len(df) * 100) if len(df) > 0 else 0
+                    st.metric(
+                        label="Keyword Matches",
+                        value=f"{total_matches:,}",
+                        delta=f"{match_rate:.1f}%"
+                    )
+                else:
+                    st.metric(label="Keyword Matches", value="N/A")
+            
+            with col3:
+                if 'Dict Word %' in df.columns:
+                    avg_dict_pct = df['Dict Word %'].mean()
+                    st.metric(
+                        label="Avg Dict Word %",
+                        value=f"{avg_dict_pct:.1f}%",
+                        delta=None
+                    )
+                else:
+                    st.metric(label="Avg Dict Word %", value="N/A")
+            
+            with col4:
+                if 'LLM Score' in df.columns:
+                    avg_llm_score = df['LLM Score'].mean()
+                    st.metric(
+                        label="Avg LLM Score",
+                        value=f"{avg_llm_score:.1f}",
+                        delta=None
+                    )
+                else:
+                    st.metric(label="Avg LLM Score", value="N/A")
+            
+            with col5:
+                unique_posts = df['Post ID'].nunique()
+                st.metric(
+                    label="Unique Posts",
+                    value=f"{unique_posts:,}",
+                    delta=None
+                )
+            
+            # Data table with filtering
+            st.subheader("📋 Statement-Level Data")
+            
+            # Filter controls
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                filter_text = st.text_input("🔍 Filter results (search any column):", key="filter_input_stmt")
+            with col2:
+                if 'Binary Match' in df.columns:
+                    show_matches_only = st.checkbox("Show keyword matches only", key="matches_filter_stmt")
+                else:
+                    show_matches_only = False
+            
+            # Apply filters
+            filtered_df = df.copy()
+            
+            if filter_text:
+                mask = filtered_df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False, na=False)).any(axis=1)
+                filtered_df = filtered_df[mask]
+            
+            if show_matches_only and 'Binary Match' in df.columns:
+                filtered_df = filtered_df[filtered_df['Binary Match'] == 1]
+            
+            # Display table
+            st.dataframe(
+                filtered_df,
+                use_container_width=True,
+                height=400
             )
+            
+            st.write(f"Showing {len(filtered_df):,} of {len(df):,} rows")
+            
+            # Download options for statement-level
+            col1, col2 = st.columns(2)
+            with col1:
+                csv_data = df.to_csv(index=False)
+                st.download_button(
+                    label="💾 Download Statement-Level CSV",
+                    data=csv_data,
+                    file_name=f"statement_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col2:
+                excel_data = df.to_csv(index=False, sep='\t')
+                st.download_button(
+                    label="📋 Download Statement-Level TSV",
+                    data=excel_data,
+                    file_name=f"statement_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.tsv",
+                    mime="text/tab-separated-values",
+                    use_container_width=True
+                )
         
-        with col2:
-            excel_data = df.to_csv(index=False, sep='\t')
-            st.download_button(
-                label="📋 Download Excel Format (TSV)",
-                data=excel_data,
-                file_name=f"classifier_word_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.tsv",
-                mime="text/tab-separated-values",
-                use_container_width=True
-            )
+        with tab2:
+            if st.session_state.id_metrics is not None:
+                id_df = st.session_state.id_metrics
+                
+                # Statistics overview for ID-level
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        label="Total IDs",
+                        value=f"{len(id_df):,}",
+                        delta=None
+                    )
+                
+                with col2:
+                    avg_statements = id_df['Total Statements'].mean()
+                    st.metric(
+                        label="Avg Statements/ID",
+                        value=f"{avg_statements:.1f}",
+                        delta=None
+                    )
+                
+                with col3:
+                    total_words = id_df['Total Words'].sum()
+                    st.metric(
+                        label="Total Words",
+                        value=f"{total_words:,}",
+                        delta=None
+                    )
+                
+                with col4:
+                    if 'Keyword Match Rate %' in id_df.columns:
+                        avg_match_rate = id_df['Keyword Match Rate %'].mean()
+                        st.metric(
+                            label="Avg Match Rate",
+                            value=f"{avg_match_rate:.1f}%",
+                            delta=None
+                        )
+                    else:
+                        st.metric(label="Avg Match Rate", value="N/A")
+                
+                # Data table for ID-level
+                st.subheader("📊 ID-Level Aggregated Data")
+                
+                # Filter for ID-level
+                filter_text_id = st.text_input("🔍 Filter ID-level results:", key="filter_input_id")
+                
+                # Apply filter
+                filtered_id_df = id_df.copy()
+                if filter_text_id:
+                    mask = filtered_id_df.astype(str).apply(lambda x: x.str.contains(filter_text_id, case=False, na=False)).any(axis=1)
+                    filtered_id_df = filtered_id_df[mask]
+                
+                # Display ID-level table
+                st.dataframe(
+                    filtered_id_df,
+                    use_container_width=True,
+                    height=400
+                )
+                
+                st.write(f"Showing {len(filtered_id_df):,} of {len(id_df):,} IDs")
+                
+                # Download options for ID-level
+                col1, col2 = st.columns(2)
+                with col1:
+                    csv_data_id = id_df.to_csv(index=False)
+                    st.download_button(
+                        label="💾 Download ID-Level CSV",
+                        data=csv_data_id,
+                        file_name=f"id_level_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                
+                with col2:
+                    excel_data_id = id_df.to_csv(index=False, sep='\t')
+                    st.download_button(
+                        label="📋 Download ID-Level TSV",
+                        data=excel_data_id,
+                        file_name=f"id_level_metrics_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.tsv",
+                        mime="text/tab-separated-values",
+                        use_container_width=True
+                    )
+            else:
+                st.error("No ID-level metrics available.")
         
-        # Visualizations
+        # Visualizations (using statement-level data for compatibility)
+        df_viz = st.session_state.statement_metrics
         st.subheader("📊 Visualizations")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            # Histogram of Dictionary Word Percentage
-            fig_hist = px.histogram(
-                df, 
-                x='Dict Word %',
-                nbins=20,
-                title="Distribution of Dictionary Word Percentage",
-                color_discrete_sequence=['#ff69b4']
-            )
-            fig_hist.update_layout(
-                xaxis_title="Dictionary Word Percentage",
-                yaxis_title="Number of Statements",
-                showlegend=False
-            )
-            st.plotly_chart(fig_hist, use_container_width=True)
-        
-        with col2:
-            # Binary Match Distribution
-            match_counts = df['Binary Match'].value_counts()
-            fig_pie = px.pie(
-                values=match_counts.values,
-                names=['No Match', 'Match'],
-                title="Binary Match Distribution",
-                color_discrete_sequence=['#ffb3d1', '#ff69b4']
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-        
-        # Classifier Strength Analysis
-        st.subheader("🎯 Classifier Strength Analysis")
-        
-        # Calculate post-level metrics
-        post_metrics = df.groupby('Post ID').agg({
-            'Binary Match': ['count', 'sum'],
-            'Word Count': 'sum'
-        }).round(2)
-        
-        post_metrics.columns = ['total_statements', 'classified_statements', 'total_words']
-        post_metrics['statement_rate'] = (post_metrics['classified_statements'] / post_metrics['total_statements']) * 100
-        
-        # Calculate word-level classification rate
-        classifier_words_per_post = df.groupby('Post ID').apply(
-            lambda x: sum((x['Dict Word %'] / 100) * x['Word Count'])
-        )
-        post_metrics['word_rate'] = (classifier_words_per_post / post_metrics['total_words']) * 100
-        
-        avg_statement_rate = post_metrics['statement_rate'].mean()
-        avg_word_rate = post_metrics['word_rate'].mean()
-        
-        def get_strength_label(rate):
-            if rate >= 50:
-                return "High", "#38a169"
-            elif rate >= 20:
-                return "Medium", "#ed8936"
+            if 'Dict Word %' in df_viz.columns:
+                # Histogram of Dictionary Word Percentage
+                fig_hist = px.histogram(
+                    df_viz, 
+                    x='Dict Word %',
+                    nbins=20,
+                    title="Distribution of Dictionary Word Percentage",
+                    color_discrete_sequence=['#ff69b4']
+                )
+                fig_hist.update_layout(
+                    xaxis_title="Dictionary Word Percentage",
+                    yaxis_title="Number of Statements",
+                    showlegend=False
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
             else:
-                return "Low", "#e53e3e"
-        
-        statement_strength, statement_color = get_strength_label(avg_statement_rate)
-        word_strength, word_color = get_strength_label(avg_word_rate)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown(f"""
-            <div class="success-box">
-                <h4 style="color: #ff1493; margin-bottom: 10px;">📊 Statement-Level Classification Rate</h4>
-                <div style="font-size: 24px; font-weight: bold; color: {statement_color};">
-                    {avg_statement_rate:.1f}% ({statement_strength})
-                </div>
-                <div style="font-size: 12px; color: #666;">Average Classification Rate</div>
-            </div>
-            """, unsafe_allow_html=True)
+                st.info("Dictionary word percentage visualization not available (no keywords provided)")
         
         with col2:
-            st.markdown(f"""
-            <div class="success-box">
-                <h4 style="color: #ff1493; margin-bottom: 10px;">📝 Word-Level Classification Rate</h4>
-                <div style="font-size: 24px; font-weight: bold; color: {word_color};">
-                    {avg_word_rate:.1f}% ({word_strength})
-                </div>
-                <div style="font-size: 12px; color: #666;">Average Word Classification Rate</div>
-            </div>
-            """, unsafe_allow_html=True)
+            if 'Binary Match' in df_viz.columns:
+                # Binary Match Distribution
+                match_counts = df_viz['Binary Match'].value_counts()
+                fig_pie = px.pie(
+                    values=match_counts.values,
+                    names=['No Match', 'Match'],
+                    title="Binary Match Distribution",
+                    color_discrete_sequence=['#ffb3d1', '#ff69b4']
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                # Show classifier distribution if available
+                classifier_cols = [col for col in df_viz.columns if col.startswith('Has ')]
+                if classifier_cols:
+                    # Create a summary of all classifiers
+                    classifier_summary = {}
+                    for col in classifier_cols:
+                        classifier_name = col.replace('Has ', '')
+                        classifier_summary[classifier_name] = df_viz[col].sum()
+                    
+                    fig_bar = px.bar(
+                        x=list(classifier_summary.keys()),
+                        y=list(classifier_summary.values()),
+                        title="Classifier Match Counts",
+                        color_discrete_sequence=['#ff69b4']
+                    )
+                    fig_bar.update_layout(
+                        xaxis_title="Classifier",
+                        yaxis_title="Number of Matches",
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                else:
+                    st.info("No classifiers or keywords available for visualization")
         
-        st.markdown("""
-        <div style="margin-top: 20px; padding: 15px; background: #fff; border-radius: 8px; border: 1px solid #ff69b4;">
-            <h5 style="color: #ff1493; margin-bottom: 10px;">💡 Classifier Strength Interpretation:</h5>
-            <div style="font-size: 13px; color: #666;">
-                <div><strong>High (>50%):</strong> Strong classifier presence</div>
-                <div><strong>Medium (20-50%):</strong> Moderate classifier presence</div>
-                <div><strong>Low (<20%):</strong> Weak classifier presence</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        # Classifier Strength Analysis (if keywords available)
+        if 'Binary Match' in df_viz.columns:
+            st.subheader("🎯 Classifier Strength Analysis")
+            
+            # Calculate post-level metrics
+            post_metrics = df_viz.groupby('Post ID').agg({
+                'Binary Match': ['count', 'sum'],
+                'Word Count': 'sum'
+            }).round(2)
+            
+            post_metrics.columns = ['total_statements', 'classified_statements', 'total_words']
+            post_metrics['statement_rate'] = (post_metrics['classified_statements'] / post_metrics['total_statements']) * 100
+            
+            # Calculate word-level classification rate
+            if 'Dict Word %' in df_viz.columns:
+                classifier_words_per_post = df_viz.groupby('Post ID').apply(
+                    lambda x: sum((x['Dict Word %'] / 100) * x['Word Count'])
+                )
+                post_metrics['word_rate'] = (classifier_words_per_post / post_metrics['total_words']) * 100
+                
+                avg_statement_rate = post_metrics['statement_rate'].mean()
+                avg_word_rate = post_metrics['word_rate'].mean()
+                
+                def get_strength_label(rate):
+                    if rate >= 50:
+                        return "High", "#38a169"
+                    elif rate >= 20:
+                        return "Medium", "#ed8936"
+                    else:
+                        return "Low", "#e53e3e"
+                
+                statement_strength, statement_color = get_strength_label(avg_statement_rate)
+                word_strength, word_color = get_strength_label(avg_word_rate)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown(f"""
+                    <div class="success-box">
+                        <h4 style="color: #ff1493; margin-bottom: 10px;">📊 Statement-Level Classification Rate</h4>
+                        <div style="font-size: 24px; font-weight: bold; color: {statement_color};">
+                            {avg_statement_rate:.1f}% ({statement_strength})
+                        </div>
+                        <div style="font-size: 12px; color: #666;">Average Classification Rate</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown(f"""
+                    <div class="success-box">
+                        <h4 style="color: #ff1493; margin-bottom: 10px;">📝 Word-Level Classification Rate</h4>
+                        <div style="font-size: 24px; font-weight: bold; color: {word_color};">
+                            {avg_word_rate:.1f}% ({word_strength})
+                        </div>
+                        <div style="font-size: 12px; color: #666;">Average Word Classification Rate</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                st.markdown("""
+                <div style="margin-top: 20px; padding: 15px; background: #fff; border-radius: 8px; border: 1px solid #ff69b4;">
+                    <h5 style="color: #ff1493; margin-bottom: 10px;">💡 Classifier Strength Interpretation:</h5>
+                    <div style="font-size: 13px; color: #666;">
+                        <div><strong>High (>50%):</strong> Strong classifier presence</div>
+                        <div><strong>Medium (20-50%):</strong> Moderate classifier presence</div>
+                        <div><strong>Low (<20%):</strong> Weak classifier presence</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
 # Run the app
 if __name__ == "__main__":
