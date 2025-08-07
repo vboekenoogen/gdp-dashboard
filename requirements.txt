@@ -4,3 +4,4 @@ numpy>=1.21.0
 chardet>=5.0.0
 textblob>=0.17.1
 vaderSentiment>=3.3.2
+plotly>=5.0.0
